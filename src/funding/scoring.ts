@@ -35,7 +35,7 @@ export interface FundingScore {
   };
   matchedSignals: string[];
   gaps: string[];
-  recommendedAction: "PURSUE" | "PARTNER" | "MONITOR" | "DO_NOT_PURSUЕ";
+  recommendedAction: "PURSUE" | "PARTNER" | "MONITOR" | "DO_NOT_PURSUE";
 }
 
 function overlap(a: string[], b: string[]): number {
@@ -111,7 +111,7 @@ export function scoreFundingOpportunity(
 
   if (eligibility === 0) {
     fit = "INELIGIBLE";
-    recommendedAction = "DO_NOT_PURSUЕ";
+    recommendedAction = "DO_NOT_PURSUE";
   } else if (score >= 85) {
     fit = "EXCELLENT";
     recommendedAction = "PURSUE";

@@ -23,3 +23,6 @@ export * from "./application/evidence-service.js";
 export * from "./application/evidence-policy.js";
 export * from "./application/persistence.js";
 export * from "./application/security-config.js";
+export * from "./application/http.js";
+export * from "./application/human-review.js";
+export * from "./application/trust-service.js";

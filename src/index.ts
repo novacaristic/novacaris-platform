@@ -10,3 +10,4 @@ export * from "./commercial/academy-consulting.js";
 export * from "./commercial/readiness.js";
 export * from "./commercial/intake.js";
 export * from "./commercial/orchestrator.js";
+export * from "./portal/customer-portal.js";

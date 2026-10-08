@@ -19,4 +19,33 @@ jobs:
           cache: npm
       - run: npm install
       - run: npm run typecheck
-      - run: npm run security:self-test
+      - run: npm test
+
+  postgres-rls:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: novacaris_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d novacaris_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply persistence schema
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d novacaris_test -v ON_ERROR_STOP=1 -f migrations/001_initial_persistence.sql
+          psql -h 127.0.0.1 -U postgres -d novacaris_test -v ON_ERROR_STOP=1 -f migrations/002_security_actions_ledger.sql
+      - name: Verify organization isolation and RLS
+        env:
+          PGPASSWORD: postgres
+        run: psql -h 127.0.0.1 -U postgres -d novacaris_test -v ON_ERROR_STOP=1 -f tests/postgres-rls.sql

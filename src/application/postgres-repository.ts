@@ -45,9 +45,28 @@ export class PostgresPersistenceRepository implements PersistenceRepository {
     return withOrganizationScope(this.db,organizationId,()=>this.db.query<AuthorizationRequestRow>(
       "SELECT id,organization_id AS \"organizationId\",agent_id AS \"agentId\",action,subject_id AS \"subjectId\",evidence_ids AS \"evidenceIds\",requested_at AS \"requestedAt\",status,decided_at AS \"decidedAt\",approver_id AS \"approverId\",rationale FROM authorization_requests WHERE organization_id=$1 ORDER BY requested_at DESC",[organizationId]));
   }
+  async saveAuthorizationRequest(organizationId:string,row:AuthorizationRequestRow):Promise<void> {
+    if(row.organizationId!==organizationId) throw new Error("Organization scope mismatch.");
+    await withOrganizationScope(this.db,organizationId,()=>this.db.query(
+      "INSERT INTO authorization_requests (id,organization_id,agent_id,action,subject_id,evidence_ids,requested_at,status,decided_at,approver_id,rationale) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING",
+      [row.id,row.organizationId,row.agentId,row.action,row.subjectId,row.evidenceIds,row.requestedAt,row.status,row.decidedAt??null,row.approverId??null,row.rationale??null]));
+  }
+  async decideAuthorization(organizationId:string,id:string,status:"APPROVED"|"REJECTED",approverId:string,rationale:string,decidedAt:string) {
+    const rows=await withOrganizationScope(this.db,organizationId,()=>this.db.query<AuthorizationRequestRow>(
+      "UPDATE authorization_requests SET status=$1,decided_at=$2,approver_id=$3,rationale=$4 WHERE id=$5 AND organization_id=$6 AND status='PENDING' RETURNING id,organization_id AS \"organizationId\",agent_id AS \"agentId\",action,subject_id AS \"subjectId\",evidence_ids AS \"evidenceIds\",requested_at AS \"requestedAt\",status,decided_at AS \"decidedAt\",approver_id AS \"approverId\",rationale",
+      [status,decidedAt,approverId,rationale,id,organizationId]));
+    const row=rows[0]; if(!row) throw new Error("Authorization request not found or already decided.");
+    return row;
+  }
   async listLedgerEntries(organizationId:string) {
     return withOrganizationScope(this.db,organizationId,()=>this.db.query<LedgerEntryRow>(
       "SELECT id,organization_id AS \"organizationId\",event_type AS \"eventType\",actor_id AS \"actorId\",timestamp,subject_id AS \"subjectId\",evidence_ids AS \"evidenceIds\",metadata FROM evidence_ledger_entries WHERE organization_id=$1 ORDER BY timestamp DESC",[organizationId]));
+  }
+  async appendLedgerEntry(organizationId:string,row:LedgerEntryRow):Promise<void> {
+    if(row.organizationId!==organizationId) throw new Error("Organization scope mismatch.");
+    await withOrganizationScope(this.db,organizationId,()=>this.db.query(
+      "INSERT INTO evidence_ledger_entries (id,organization_id,event_type,actor_id,timestamp,subject_id,evidence_ids,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+      [row.id,row.organizationId,row.eventType,row.actorId,row.timestamp,row.subjectId,row.evidenceIds,row.metadata]));
   }
 }
 

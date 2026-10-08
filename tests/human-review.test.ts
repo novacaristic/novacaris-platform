@@ -12,6 +12,7 @@ const session = {
 const ledger = new EvidenceLedger();
 const request = ledger.requestAuthorization({
   id: "auth:org-a:1",
+  organizationId: "org-a",
   agentId: "mr-nova",
   action: "EXECUTE_WITH_APPROVAL",
   subjectId: "org-a:action-1",

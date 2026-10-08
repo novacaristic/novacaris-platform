@@ -32,6 +32,8 @@ export interface MembershipResolver {
   rolesFor(userId: string, organizationId: string): Promise<WorkspaceRole[]>;
 }
 
+import { createSecureSessionId } from "./secure-session.js";
+
 export async function createSession(
   token: string,
   organizationId: string,
@@ -48,7 +50,7 @@ export async function createSession(
   if (!roles.length) throw new Error("User is not a member of this organization.");
 
   return {
-    sessionId: `session-${claims.subject}-${Date.now()}`,
+    sessionId: createSecureSessionId(),
     userId: claims.subject,
     organizationId,
     roles,

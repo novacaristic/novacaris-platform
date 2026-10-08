@@ -55,3 +55,10 @@ DROP POLICY IF EXISTS authorization_scope ON authorization_requests;
 CREATE POLICY authorization_scope ON authorization_requests USING (organization_id = novacaris_current_organization()) WITH CHECK (organization_id = novacaris_current_organization());
 DROP POLICY IF EXISTS ledger_scope ON evidence_ledger_entries;
 CREATE POLICY ledger_scope ON evidence_ledger_entries USING (organization_id = novacaris_current_organization()) WITH CHECK (organization_id = novacaris_current_organization());
+
+
+-- Trust-loop hardening: organization is part of the authorization identity.
+CREATE INDEX IF NOT EXISTS authorization_org_subject_idx
+  ON authorization_requests (organization_id, subject_id);
+
+-- Defense in depth: ledger subjects and authorization requests remain organization scoped.

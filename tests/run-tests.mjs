@@ -4,6 +4,7 @@ const commands = [
   ["node", ["--experimental-strip-types", "tests/security.test.ts"]],
   ["node", ["--experimental-strip-types", "tests/readiness.test.ts"]],
   ["node", ["--experimental-strip-types", "tests/oidc.test.ts"]],
+  ["node", ["--experimental-strip-types", "tests/human-review.test.ts"]],
 ];
 
 for (const [command, args] of commands) {

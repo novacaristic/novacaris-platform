@@ -10,5 +10,5 @@ export interface PersistenceRepository {
  getOrganization(id:string):Promise<OrganizationRow|undefined>; listMembers(organizationId:string):Promise<OrganizationMemberRow[]>;
  getAssessment(organizationId:string,assessmentId:string):Promise<AssessmentRow|undefined>; listAssessments(organizationId:string):Promise<AssessmentRow[]>;
  listEvidence(organizationId:string):Promise<EvidenceRow[]>; listActions(organizationId:string):Promise<ActionRow[]>;
- listAuthorizationRequests(organizationId:string):Promise<AuthorizationRequestRow[]>; listLedgerEntries(organizationId:string):Promise<LedgerEntryRow[]>;
+ listAuthorizationRequests(organizationId:string):Promise<AuthorizationRequestRow[]>; saveAuthorizationRequest(organizationId:string,row:AuthorizationRequestRow):Promise<void>; decideAuthorization(organizationId:string,id:string,status:"APPROVED"|"REJECTED",approverId:string,rationale:string,decidedAt:string):Promise<AuthorizationRequestRow>; listLedgerEntries(organizationId:string):Promise<LedgerEntryRow[]>; appendLedgerEntry(organizationId:string,row:LedgerEntryRow):Promise<void>;
 }

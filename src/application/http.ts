@@ -1,5 +1,6 @@
 import type { AssessmentRequest, AssessmentResponse, ApplicationHealth, HumanReviewRequest } from "./contracts.js";
 import { DefaultHumanReviewCenter } from "./human-review.js";
+import type { EvidenceLedger } from "../domain/ledger.js";
 import type { AuthenticatedSession } from "./identity.js";
 import type { AssessmentRunContext } from "./assessment-service.js";
 import { runWorkspaceAssessment, reassessAfterEvidenceChange } from "./assessment-service.js";
@@ -24,6 +25,7 @@ export interface ApplicationDependencies {
   assessmentContext: AssessmentRunContext;
   version: string;
   humanReviewCenter?: DefaultHumanReviewCenter;
+  evidenceLedger?: EvidenceLedger;
 }
 
 function ok<T>(body: T): HttpResponse<T> { return { status: 200, body }; }
@@ -87,7 +89,7 @@ export async function handleApplicationRequest(
       const center = deps.humanReviewCenter ?? new DefaultHumanReviewCenter();
       requireRole(session, "OWNER", "ADMIN", "COMPLIANCE");
       const actions = await deps.actionRepository.listActions(session);
-      const authorizations = center.list(session, actions, []);
+      const authorizations = center.list(session, actions, deps.evidenceLedger ? deps.evidenceLedger.listAuthorizations() : []);
       return ok({ items: authorizations, humanReviewRequired: authorizations.filter(item => item.requiresDecision).length });
     }
 
@@ -96,9 +98,16 @@ export async function handleApplicationRequest(
       requireRole(session, "OWNER", "ADMIN", "COMPLIANCE");
       const body = request.body as HumanReviewRequest | undefined;
       if (!body?.authorizationId || !body.decision || !body.rationale?.trim()) return bad("Authorization id, decision, and rationale are required.");
-      // The concrete EvidenceLedger is supplied by the Trust Layer in production; this route
-      // is intentionally not allowed to manufacture an approval outside that ledger.
-      return bad("Authorization ledger integration is required before an authorization decision can be executed.");
+      if (!deps.evidenceLedger) return bad("Evidence Ledger is not configured.");
+      const authorization = deps.evidenceLedger.getAuthorization(body.authorizationId);
+      if (!authorization) return bad("Authorization request not found.");
+      if (authorization.subjectId && !authorization.subjectId.startsWith(session.organizationId)) {
+        return forbidden("Authorization request is outside the current organization scope.");
+      }
+      const result = center.decideAuthorization(session, deps.evidenceLedger, body.authorizationId, {
+        decision: body.decision, rationale: body.rationale,
+      });
+      return ok(result);
     }
 
     if (request.method === "PATCH" && request.path.startsWith("/api/actions/")) {

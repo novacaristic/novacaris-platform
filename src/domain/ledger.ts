@@ -2,6 +2,7 @@ import type { EvidenceLedgerEntry, HumanApproval } from "./evidence.js";
 
 export interface AuthorizationRequest {
   id: string;
+  organizationId: string;
   agentId: string;
   action: string;
   subjectId: string;
@@ -22,6 +23,10 @@ export class EvidenceLedger {
       throw new Error(`Ledger entry already exists: ${entry.id}`);
     this.entries.push(Object.freeze({ ...entry, evidenceIds: [...entry.evidenceIds], metadata: { ...entry.metadata } }));
     return entry;
+  }
+
+  listAuthorizations(): readonly AuthorizationRequest[] {
+    return [...this.approvals.values()];
   }
 
   list(): readonly EvidenceLedgerEntry[] {

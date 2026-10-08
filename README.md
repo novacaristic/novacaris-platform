@@ -10,6 +10,14 @@ This repository contains the implementation foundation for **Mr. NOVA**, the con
 4. Evidence Ledger + Human Authorization
 5. Government Opportunity Intelligence scoring
 6. **NOVA CORE** — orchestration across all five surfaces
+7. **NovaCarïs Academy** — education, competency, certification and workforce enablement
+8. **NovaCarïs Consulting** — readiness, compliance, AI transformation, implementation and funding intelligence
+
+## Commercial operating layers
+
+Academy and Consulting are official NovaCarïs commercial layers powered by Mr. NOVA. Academy turns platform knowledge into training and competency evidence. Consulting turns platform intelligence into assessments, implementations, transformation programs and recurring advisory services.
+
+See `docs/academy-consulting-architecture.md` for the commercial model and `src/commercial/academy-consulting.ts` for the initial domain model.
 
 ## NOVA CORE flow
 

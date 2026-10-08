@@ -1,12 +1,13 @@
 {
   "name": "@novacaris/platform",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck",
-    "test:contracts": "npm run typecheck"
+    "test:contracts": "npm run typecheck",
+    "security:self-test": "npm run typecheck"
   },
   "devDependencies": {
     "typescript": "^5.8.3"

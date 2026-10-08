@@ -161,12 +161,13 @@ export function runNOVAAssessment(input: NOVAAssessmentInput): NOVAAssessmentPac
     funding,
   );
 
-  return {
+  const result: NOVAAssessmentPackage = {
     assessment,
     compliance,
-    mprime,
+    ...(mprime ? { mprime } : {}),
     funding,
     usableEvidenceIds: usableEvidence.map((e) => e.id),
     validation: validateProviderIntake(input.provider),
-  } as unknown as NOVAAssessmentPackage;
+  };
+  return result;
 }

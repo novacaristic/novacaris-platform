@@ -11,3 +11,4 @@ export * from "./commercial/readiness.js";
 export * from "./commercial/intake.js";
 export * from "./commercial/orchestrator.js";
 export * from "./portal/customer-portal.js";
+export * from "./portal/dashboard-model.js";

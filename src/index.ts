@@ -28,3 +28,6 @@ export * from "./application/human-review.js";
 export * from "./application/trust-service.js";
 export * from "./application/secure-session.js";
 export * from "./application/postgres-context.js";
+export * from "./application/postgres-repository.js";
+export * from "./application/oidc.js";
+export * from "./application/security-self-test.js";

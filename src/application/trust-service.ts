@@ -22,7 +22,7 @@ export function authorizeNOVAAction(
   if (!decision.allowed || !decision.requiresApproval) return decision;
   const request = ledger.requestAuthorization({
     id: \`auth:workspace:\${session.organizationId}:\${Date.now()}\`,
-    agentId: input.agentId, action: input.action, subjectId: input.subjectId, evidenceIds: input.evidenceIds,
+    organizationId: session.organizationId, agentId: input.agentId, action: input.action, subjectId: input.subjectId, evidenceIds: input.evidenceIds,
   });
   return { ...decision, authorizationRequestId: request.id };
 }

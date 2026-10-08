@@ -1,4 +1,5 @@
-import type { AssessmentRequest, AssessmentResponse, ApplicationHealth } from "./contracts.js";
+import type { AssessmentRequest, AssessmentResponse, ApplicationHealth, HumanReviewRequest } from "./contracts.js";
+import { DefaultHumanReviewCenter } from "./human-review.js";
 import type { AuthenticatedSession } from "./identity.js";
 import type { AssessmentRunContext } from "./assessment-service.js";
 import { runWorkspaceAssessment, reassessAfterEvidenceChange } from "./assessment-service.js";
@@ -22,6 +23,7 @@ export interface ApplicationDependencies {
   actionRepository: ActionRepository;
   assessmentContext: AssessmentRunContext;
   version: string;
+  humanReviewCenter?: DefaultHumanReviewCenter;
 }
 
 function ok<T>(body: T): HttpResponse<T> { return { status: 200, body }; }
@@ -79,6 +81,24 @@ export async function handleApplicationRequest(
       );
       await syncActionsFromAssessment(session, result.package.assessment, deps.actionRepository);
       return created(result);
+    }
+
+    if (request.method === "GET" && request.path === "/api/review") {
+      const center = deps.humanReviewCenter ?? new DefaultHumanReviewCenter();
+      requireRole(session, "OWNER", "ADMIN", "COMPLIANCE");
+      const actions = await deps.actionRepository.listActions(session);
+      const authorizations = center.list(session, actions, []);
+      return ok({ items: authorizations, humanReviewRequired: authorizations.filter(item => item.requiresDecision).length });
+    }
+
+    if (request.method === "POST" && request.path === "/api/review/authorization") {
+      const center = deps.humanReviewCenter ?? new DefaultHumanReviewCenter();
+      requireRole(session, "OWNER", "ADMIN", "COMPLIANCE");
+      const body = request.body as HumanReviewRequest | undefined;
+      if (!body?.authorizationId || !body.decision || !body.rationale?.trim()) return bad("Authorization id, decision, and rationale are required.");
+      // The concrete EvidenceLedger is supplied by the Trust Layer in production; this route
+      // is intentionally not allowed to manufacture an approval outside that ledger.
+      return bad("Authorization ledger integration is required before an authorization decision can be executed.");
     }
 
     if (request.method === "PATCH" && request.path.startsWith("/api/actions/")) {

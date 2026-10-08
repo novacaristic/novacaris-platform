@@ -2,6 +2,7 @@ import type { EvidenceLedgerEntry, HumanApproval } from "./evidence.js";
 
 export interface AuthorizationRequest {
   id: string;
+  organizationId: string;
   agentId: string;
   action: string;
   subjectId: string;

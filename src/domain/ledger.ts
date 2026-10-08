@@ -24,6 +24,10 @@ export class EvidenceLedger {
     return entry;
   }
 
+  listAuthorizations(): readonly AuthorizationRequest[] {
+    return [...this.approvals.values()];
+  }
+
   list(): readonly EvidenceLedgerEntry[] {
     return this.entries;
   }

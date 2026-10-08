@@ -88,7 +88,7 @@ export class EvidenceLedger {
     now = new Date()
   ): EvidenceLedgerEntry {
     const entry: EvidenceLedgerEntry = {
-      id: `execution:${crypto.randomUUID()}`,
+      id: `execution:${this.entries.length + 1}:${now.getTime()}`,
       eventType: "ACTION_EXECUTED",
       actorId,
       timestamp: now.toISOString(),

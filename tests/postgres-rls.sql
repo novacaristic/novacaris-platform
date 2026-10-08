@@ -64,16 +64,17 @@ BEGIN
   SELECT COUNT(*) INTO c FROM actions; IF c <> 1 THEN RAISE EXCEPTION 'action isolation failed'; END IF;
   SELECT COUNT(*) INTO c FROM authorization_requests; IF c <> 1 THEN RAISE EXCEPTION 'authorization isolation failed'; END IF;
   SELECT COUNT(*) INTO c FROM evidence_ledger_entries; IF c <> 1 THEN RAISE EXCEPTION 'ledger isolation failed'; END IF;
+  SELECT COUNT(*) INTO c FROM authorization_requests; IF c <> 1 THEN RAISE EXCEPTION 'authorization isolation failed'; END IF;
 END $$;
 
-UPDATE evidence_records
-SET payload = '{"attempt":"cross-org-update"}'
-WHERE id = 'evidence-b';
+UPDATE authorization_requests
+SET rationale = 'cross-org-update'
+WHERE id = 'auth-b';
 
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM evidence_records WHERE id = 'evidence-b') THEN
-    RAISE EXCEPTION 'cross-organization UPDATE bypassed RLS';
+  IF EXISTS (SELECT 1 FROM authorization_requests WHERE id = 'auth-b') THEN
+    RAISE EXCEPTION 'cross-organization authorization UPDATE bypassed RLS';
   END IF;
 END $$;
 

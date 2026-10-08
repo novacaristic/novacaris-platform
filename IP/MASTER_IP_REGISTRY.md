@@ -163,6 +163,15 @@ child-facing AI does not directly grant minutes, remove restrictions, change par
 ### G1. NovaCarïs Academy
 Education and enablement ecosystem converting books/materials into lectures, labs, projects, assessments, portfolio evidence and professional pathways.
 
+Defined commercial layers:
+- free intelligence
+- courses
+- applied labs
+- professional certificates
+- enterprise academy
+
+Initial curriculum domains include AI literacy, behavioral-health operations, COMAR/regulatory readiness, MPRIME readiness, evidence management, Medicaid operations, and AI governance.
+
 Known course/product concept:
 - AI Without Fear
 
@@ -175,6 +184,16 @@ Productized service/business model for packaging, implementing and distributing 
 
 ### H2. NovaCarïs Consulting
 AI readiness, workflow analysis, intelligent-organization design and implementation.
+
+Defined service lines:
+- readiness assessment
+- regulatory/compliance transformation
+- AI transformation
+- NovaCarïs implementation
+- funding intelligence
+- growth/operating strategy
+
+Commercial model: assessment → implementation → verification → recurring advisory, with Academy training available as a capability-enablement layer.
 
 ### H3. NovaCarïs Outreach
 Community engagement concept.

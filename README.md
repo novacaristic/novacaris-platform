@@ -1,6 +1,6 @@
-# NovaCarïs Platform — Trust & Intelligence Foundation
+# NovaCarïs Platform — Mr. NOVA Trust & Intelligence Foundation
 
-This repository contains the first implementation foundation for NovaCarïs regulated intelligence.
+This repository contains the implementation foundation for **Mr. NOVA**, the controlled intelligence layer of NovaCarïs.
 
 ## Product surfaces
 
@@ -9,26 +9,24 @@ This repository contains the first implementation foundation for NovaCarïs regu
 3. Agent Registry + Permission Registry
 4. Evidence Ledger + Human Authorization
 5. Government Opportunity Intelligence scoring
+6. **NOVA CORE** — orchestration across all five surfaces
 
-## Architecture
+## NOVA CORE flow
 
-Organization → Site → Service → Requirement → Evidence → Risk → Action → Verification
+`Request → Organization/Site/Service → Regulatory assessment → Evidence validation → MPRIME readiness → Funding intelligence → Permission check → Human authorization → Authorized action → Evidence Ledger`
 
-Agents operate through a separate authorization plane:
+## Trust boundary
 
-Agent → Permission → Evidence → Human Authorization → Action → Ledger
+Mr. NOVA may analyze, recommend, prepare, or execute only within an explicit agent permission and action ceiling. Consequential actions can require human authorization. Every authorized execution is recorded in the evidence ledger.
 
-Funding intelligence uses:
+## Regulatory safety
 
-Opportunity → Eligibility → Mission → Geography → Capability → Evidence → Activity → Timing → Recommendation
+Regulatory content is source-backed and versioned. Proposed language must never be represented as current enforceable law. Source ingestion and verification must occur before production decisions.
 
-## Safety rule
+## Funding safety
 
-Regulatory content is versioned and source-backed. Proposed language must not be represented as current enforceable law. Consequential actions require explicit authorization.
+Funding recommendations are intelligence, not guarantees of eligibility or award. Published eligibility should be verified against the funder's current source before a pursuit decision.
 
-## Current Maryland source assumptions
+## Construction status
 
-- Maryland Medicaid says MPRIME replaces ePREP in October 2026 and that providers need to hold claims until enrolled through MPRIME.
-- Maryland BHA labels the current COMAR 10.63 draft as proposed language posted for comment/feedback and not for promulgation.
-
-These assumptions must be refreshed by a source-ingestion job before production decisions are made.
+This is an active construction repository. Current work is a foundation, not a production-certified healthcare system.

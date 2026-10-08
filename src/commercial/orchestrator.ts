@@ -3,7 +3,7 @@ import { assessRequirement, type RegulatoryGraph } from "../domain/regulatory.js
 import { scoreFundingOpportunity, type ApplicantProfile, type FundingOpportunity } from "../funding/scoring.js";
 import { isEvidenceUsable, type EvidenceRecord } from "../domain/evidence.js";
 import { buildReadinessAssessment, type ReadinessAssessment, type ReadinessFinding } from "./readiness.js";
-import { prepareIntakeAssessment, type ProviderIntake } from "./intake.js";
+import { prepareIntakeAssessment, validateProviderIntake, type ProviderIntake } from "./intake.js";
 
 export interface NOVAAssessmentInput {
   provider: ProviderIntake;
@@ -167,6 +167,6 @@ export function runNOVAAssessment(input: NOVAAssessmentInput): NOVAAssessmentPac
     mprime,
     funding,
     usableEvidenceIds: usableEvidence.map((e) => e.id),
-    validation: require("./intake.js"),
+    validation: validateProviderIntake(input.provider),
   } as unknown as NOVAAssessmentPackage;
 }

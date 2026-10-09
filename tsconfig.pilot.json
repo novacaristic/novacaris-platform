@@ -46,6 +46,8 @@
     "builds/58-nova-signed-release-attestation/src/provenance-attestation.ts",
     "builds/58-nova-signed-release-attestation/tests/provenance-attestation.test.ts",
     "builds/59-nova-deployment-attestation-service/src/deployment-attestation-service.ts",
-    "builds/59-nova-deployment-attestation-service/tests/deployment-attestation-service.test.ts"
+    "builds/59-nova-deployment-attestation-service/tests/deployment-attestation-service.test.ts",
+    "builds/61-nova-client-case-workspace/src/client-case-workspace.ts",
+    "builds/61-nova-client-case-workspace/tests/client-case-workspace.test.ts"
   ]
 }

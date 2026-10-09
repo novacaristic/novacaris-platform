@@ -64,27 +64,30 @@ export class RecoveryOperatorConsole {
     const limit = options.limit ?? 50;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("OPERATOR_QUEUE_LIMIT_INVALID");
     if (options.status && !["executing", "completed", "reconciliation_required"].includes(options.status)) throw new Error("OPERATOR_QUEUE_STATUS_INVALID");
-    const result = await this.pool.query<RecoveryQueueItem>(
-      `SELECT e.id AS execution_id, e.case_id, c.operation_id, c.event_id,
-              e.status AS execution_status, e.idempotency_key, e.requested_by_actor,
-              e.authorization_reference, e.downstream_reference, e.evidence_reference,
-              e.failure_code, e.started_at, e.completed_at, c.resolution AS case_resolution,
-              c.resolution_evidence_reference AS case_resolution_evidence,
-              r.id AS review_id, r.disposition AS review_disposition,
-              r.evidence_reference AS review_evidence_reference,
-              r.reviewed_by_actor, r.reviewed_at
-         FROM nova_pilot_recovery_executions e
-         JOIN nova_pilot_reconciliation_cases c
-           ON c.id = e.case_id AND c.tenant_id = e.tenant_id
-         LEFT JOIN nova_pilot_recovery_operator_reviews r
-           ON r.execution_id = e.id AND r.tenant_id = e.tenant_id
-        WHERE e.tenant_id = $1::uuid AND ($2::text IS NULL OR e.status = $2)
-        ORDER BY CASE WHEN e.status = 'reconciliation_required' THEN 0 WHEN e.status = 'executing' THEN 1 ELSE 2 END,
-                 e.started_at ASC
-        LIMIT $3`,
-      [context.tenantId, options.status ?? null, limit],
-    );
-    return result.rows;
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<RecoveryQueueItem>(
+        `SELECT e.id AS execution_id, e.case_id, c.operation_id, c.event_id,
+                e.status AS execution_status, e.idempotency_key, e.requested_by_actor,
+                e.authorization_reference, e.downstream_reference, e.evidence_reference,
+                e.failure_code, e.started_at, e.completed_at, c.resolution AS case_resolution,
+                c.resolution_evidence_reference AS case_resolution_evidence,
+                r.id AS review_id, r.disposition AS review_disposition,
+                r.evidence_reference AS review_evidence_reference,
+                r.reviewed_by_actor, r.reviewed_at
+           FROM nova_pilot_recovery_executions e
+           JOIN nova_pilot_reconciliation_cases c
+             ON c.id = e.case_id AND c.tenant_id = e.tenant_id
+           LEFT JOIN nova_pilot_recovery_operator_reviews r
+             ON r.execution_id = e.id AND r.tenant_id = e.tenant_id
+          WHERE e.tenant_id = $1::uuid AND ($2::text IS NULL OR e.status = $2)
+          ORDER BY CASE WHEN e.status = 'reconciliation_required' THEN 0 WHEN e.status = 'executing' THEN 1 ELSE 2 END,
+                   e.started_at ASC
+          LIMIT $3`,
+        [context.tenantId, options.status ?? null, limit],
+      );
+      return result.rows;
+    } finally { client.release(); }
   }
 
   async reviewAmbiguous(context: RequestContext, input: {

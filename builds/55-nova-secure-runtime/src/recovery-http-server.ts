@@ -11,7 +11,7 @@ export interface RecoveryRuntimeOptions {
   allowedOrigin?: string;
   serviceName?: string;
 }
-function send(response: ServerResponse, status: number, body: string | object, contentType = "application/json; charset=utf-8"): void {
+function send(response: ServerResponse, status: number, body: unknown, contentType = "application/json; charset=utf-8"): void {
   response.statusCode = status;
   response.setHeader("Content-Type", contentType);
   response.setHeader("X-Content-Type-Options", "nosniff");

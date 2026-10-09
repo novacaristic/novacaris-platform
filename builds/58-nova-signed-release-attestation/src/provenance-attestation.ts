@@ -1,5 +1,5 @@
 import { createHash, verify as cryptoVerify, type KeyObject } from "node:crypto";
-import type { SmokeReport } from "../../../builds/57-nova-deployment-evidence-ledger/src/release-gate";
+import { evaluateReleaseGate, type ReleaseEvidenceInput, type ReleaseGateResult, type SmokeReport } from "../../../builds/57-nova-deployment-evidence-ledger/src/release-gate";
 
 export interface ReleaseAttestationPayload {
   schemaVersion: "1.0";
@@ -25,7 +25,7 @@ export interface AttestationVerification {
 export type TrustedAttestationKeys = ReadonlyMap<string, string | Buffer | KeyObject>;
 
 export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
   const record = value as Record<string, unknown>;
   return "{" + Object.keys(record).sort().map(key => JSON.stringify(key) + ":" + canonicalJson(record[key])).join(",") + "}";
@@ -88,4 +88,38 @@ export function verifyReleaseAttestation(input: {
   const unique = [...new Set(blockers)];
   if (unique.length) return { verified: false, blockers: unique, keyId: att.keyId };
   return { verified: true, blockers: [], keyId: att.keyId, payloadSha256: sha256Hex(canonicalJson(p)) };
+}
+
+export interface SignedReleaseGateResult extends ReleaseGateResult {
+  attestationVerification: AttestationVerification;
+}
+/** Release gate that requires cryptographic provenance; never accepts a caller-supplied verified flag. */
+export function evaluateSignedReleaseGate(input: {
+  evidence: ReleaseEvidenceInput;
+  attestation: unknown;
+  trustedKeys: TrustedAttestationKeys;
+  now?: Date;
+  maxAgeSeconds?: number;
+}): SignedReleaseGateResult {
+  const gate = evaluateReleaseGate(input.evidence);
+  const verification = verifyReleaseAttestation({
+    attestation: input.attestation,
+    trustedKeys: input.trustedKeys,
+    expected: {
+      environment: input.evidence.environment,
+      commitSha: input.evidence.commitSha,
+      smokeReport: gate.report ?? (input.evidence.smokeReport as SmokeReport),
+      testRunUrl: input.evidence.testRunUrl,
+    },
+    now: input.now,
+    maxAgeSeconds: input.maxAgeSeconds,
+  });
+  const blockers = [...new Set([...gate.blockers, ...verification.blockers])];
+  return {
+    ...gate,
+    eligible: gate.eligible && verification.verified && blockers.length === 0,
+    blockers,
+    warnings: gate.warnings,
+    attestationVerification: verification,
+  };
 }

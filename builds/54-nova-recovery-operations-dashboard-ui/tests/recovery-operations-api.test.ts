@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { RecoveryOperationsApi } from "../src/recovery-operations-api";
+import { RecoveryOperationsApi, type ApiRequest } from "../src/recovery-operations-api";
 import type { RequestContext } from "../../../builds/44-shared-platform-foundation/src/contracts";
 
 const context: RequestContext = {
@@ -8,7 +8,7 @@ const context: RequestContext = {
   actor: { type: "user", reference: "operator-api-test" },
   authorizationDecisionReference: "authz://api-test",
 };
-function makeApi(resolveContext: (ctx: RequestContext | null) => Promise<RequestContext | null> = async () => context) {
+function makeApi(resolveContext: (request: ApiRequest) => Promise<RequestContext | null> = async () => context) {
   const operators = {
     listQueue: vi.fn(async () => [{ execution_id: "execution-1" }]),
     reviewAmbiguous: vi.fn(async (_ctx: RequestContext, input: unknown) => ({ id: "review-1", input })),

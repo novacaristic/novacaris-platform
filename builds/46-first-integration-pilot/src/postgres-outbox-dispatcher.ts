@@ -37,7 +37,7 @@ export class PostgresOutboxStore implements OutboxStore {
            SELECT id
              FROM nova_pilot_outbox
             WHERE (status = 'pending' AND next_attempt_at <= now())
-               OR (status = 'delivering' AND lease_until <= now())
+               OR (status = 'delivering' AND (lease_until IS NULL OR lease_until <= now()))
             ORDER BY next_attempt_at, created_at
             FOR UPDATE SKIP LOCKED
             LIMIT $1

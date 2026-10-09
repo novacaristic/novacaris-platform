@@ -6,13 +6,17 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["vitest/globals"]
+    "types": [
+      "vitest/globals"
+    ]
   },
   "include": [
     "builds/44-shared-platform-foundation/src/contracts.ts",
     "builds/46-first-integration-pilot/src/pilot.ts",
     "builds/46-first-integration-pilot/tests/pilot.test.ts",
     "builds/47-pilot-execution-evidence-runner/src/evidence.ts",
-    "builds/47-pilot-execution-evidence-runner/tests/evidence.test.ts"
+    "builds/47-pilot-execution-evidence-runner/tests/evidence.test.ts",
+    "builds/46-first-integration-pilot/src/postgres-operation-store.ts",
+    "builds/46-first-integration-pilot/tests/postgres-operation-store.test.ts"
   ]
 }

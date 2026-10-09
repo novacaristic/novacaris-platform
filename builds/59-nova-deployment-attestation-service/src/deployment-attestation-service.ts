@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import type { EvidenceContext, DeploymentEvidenceLedger } from "../../../builds/57-nova-deployment-evidence-ledger/src/deployment-evidence-ledger";
 import type { SmokeReport } from "../../../builds/57-nova-deployment-evidence-ledger/src/release-gate";
-import { verifyReleaseAttestation, type SignedReleaseAttestation } from "./provenance-attestation";
+import { verifyReleaseAttestation, type SignedReleaseAttestation } from "../../../builds/58-nova-signed-release-attestation/src/provenance-attestation";
 
 type Action = "deployment.attestation.submit" | "deployment.release.approve";
 type Authorizer = (context: EvidenceContext, action: Action) => Promise<boolean>;
@@ -92,16 +92,42 @@ export class DeploymentAttestationService {
   async approve(context: EvidenceContext, ledgerId: string, approvalReference: string): Promise<{ ledgerId: string; approved: true; replayed: boolean }> {
     this.assertHuman(context);
     if (!await this.authorize(context, "deployment.release.approve")) throw new Error("DEPLOYMENT_RELEASE_APPROVAL_FORBIDDEN");
-    if (!/^\d+$/.test(ledgerId) || !approvalReference.trim()) throw new Error("DEPLOYMENT_RELEASE_APPROVAL_INPUT_INVALID");
-    const result = await this.pool.query(
-      `SELECT e.eligible, a.id AS attestation_id
-       FROM nova_deployment_evidence_ledger e
-       JOIN nova_deployment_signed_attestations a ON a.ledger_id=e.id AND a.tenant_id=e.tenant_id AND a.verified=true
-       WHERE e.id=$1 AND e.tenant_id=$2::uuid ORDER BY a.recorded_at DESC LIMIT 1`,
-      [ledgerId, context.tenantId],
-    );
-    if (!result.rows[0]) throw new Error("DEPLOYMENT_SIGNED_ATTESTATION_REQUIRED");
-    if (!result.rows[0].eligible) throw new Error("DEPLOYMENT_RELEASE_GATE_BLOCKED");
+    if (!/^\\d+$/.test(ledgerId) || !approvalReference.trim()) throw new Error("DEPLOYMENT_RELEASE_APPROVAL_INPUT_INVALID");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `SELECT e.id, e.environment, e.commit_sha, e.smoke_run_id, e.smoke_report, e.test_run_url, e.eligible,
+                a.id AS attestation_id, a.key_id, a.payload_sha256, a.payload, a.signature_base64, a.verified
+         FROM nova_deployment_evidence_ledger e
+         JOIN nova_deployment_signed_attestations a ON a.ledger_id=e.id AND a.tenant_id=e.tenant_id
+         WHERE e.id=$1 AND e.tenant_id=$2::uuid AND a.verified=true
+         ORDER BY a.recorded_at DESC LIMIT 1 FOR UPDATE OF e,a`,
+        [ledgerId, context.tenantId],
+      );
+      const row = result.rows[0];
+      if (!row) throw new Error("DEPLOYMENT_SIGNED_ATTESTATION_REQUIRED");
+      if (!row.eligible) throw new Error("DEPLOYMENT_RELEASE_GATE_BLOCKED");
+      const keyResult = await client.query(
+        `SELECT public_key_pem FROM nova_deployment_attestation_keys
+         WHERE key_id=$1 AND algorithm='Ed25519' AND status='active' AND valid_from <= $2
+         AND (valid_until IS NULL OR valid_until > $2)`,
+        [row.key_id, this.now()],
+      );
+      if (!keyResult.rows[0]) throw new Error("DEPLOYMENT_ATTESTATION_SIGNING_KEY_INACTIVE");
+      const verification = verifyReleaseAttestation({
+        attestation: { algorithm: "Ed25519", keyId: row.key_id, payload: row.payload, signatureBase64: row.signature_base64 },
+        trustedKeys: new Map([[String(row.key_id), String(keyResult.rows[0].public_key_pem)]]),
+        expected: { environment: String(row.environment), commitSha: String(row.commit_sha), smokeReport: row.smoke_report as SmokeReport, testRunUrl: String(row.test_run_url) },
+        now: this.now(),
+      });
+      if (!verification.verified || verification.payloadSha256 !== row.payload_sha256) throw new Error("DEPLOYMENT_ATTESTATION_REVERIFICATION_FAILED");
+      await client.query("COMMIT");
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw error;
+    } finally { client.release(); }
+    // Keep the existing human authorization and append-only approval audit in the canonical Build 57 ledger.
     return this.ledger.approve(context, ledgerId, approvalReference);
   }
 }

@@ -36,7 +36,16 @@ suite("Build 48 NOVA end-to-end PostgreSQL recovery proof", () => {
 
   beforeAll(async () => {
     const migration = await readFile(resolve(process.cwd(), "builds/46-first-integration-pilot/sql/build_46_durable_execution.sql"), "utf8");
-    await pool.query(migration);
+    // Both integration suites may initialize the same PostgreSQL service in parallel.
+    // Serialize DDL setup with a session-level advisory lock to avoid duplicate type creation.
+    const migrationClient = await pool.connect();
+    try {
+      await migrationClient.query("SELECT pg_advisory_lock(480046)");
+      await migrationClient.query(migration);
+      await migrationClient.query("SELECT pg_advisory_unlock(480046)");
+    } finally {
+      migrationClient.release();
+    }
     await pool.query("DELETE FROM nova_pilot_outbox WHERE tenant_id = $1::uuid", [tenantId]);
     await pool.query("DELETE FROM nova_pilot_operations WHERE tenant_id = $1::uuid", [tenantId]);
   });

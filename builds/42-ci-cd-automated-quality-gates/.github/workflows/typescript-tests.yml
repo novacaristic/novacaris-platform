@@ -1,0 +1,71 @@
+name: NOVA TypeScript Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover-project:
+    name: Discover test tooling
+    runs-on: ubuntu-latest
+    outputs:
+      has-package: ${{ steps.detect.outputs.has_package }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        shell: bash
+        run: |
+          if [ -f package.json ]; then
+            echo "has_package=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_package=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: Run configured TypeScript tests
+    needs: discover-project
+    if: needs.discover-project.outputs.has-package == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+      - name: Install locked dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::error::package.json exists but package-lock.json is missing; add a committed lockfile before enabling CI."
+            exit 1
+          fi
+      - name: Run type check when configured
+        shell: bash
+        run: |
+          node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.typecheck ? 0 : 1)"             && npm run typecheck || {
+              echo "No typecheck script configured, or typecheck failed. Review package.json scripts."
+              exit 1
+            }
+      - name: Run tests
+        run: npm test -- --run
+
+  no-project-manifest:
+    name: Report missing root package manifest
+    needs: discover-project
+    if: needs.discover-project.outputs.has-package != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::notice::No root package.json found. This job does not claim TypeScript tests passed."
+          echo "Configure a workspace or package-specific workflow before treating test coverage as a release gate."

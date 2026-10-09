@@ -47,10 +47,20 @@ describe("Build 46 first integration pilot", () => {
     expect(deps.adapterExecute).not.toHaveBeenCalled();
   });
 
-  it("denies tenant mismatch before adapter execution", async () => {
+  it("denies tenant mismatch before policy or adapter execution", async () => {
     const deps = makePilot();
     const result = await deps.pilot.execute(context, { ...request, tenantId: "tenant-synthetic-b" });
     expect(result).toEqual({ status: "denied", reason: "TENANT_CONTEXT_MISMATCH" });
+    expect(deps.policyAllows).not.toHaveBeenCalled();
+    expect(deps.adapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid actor context before policy or adapter execution", async () => {
+    const deps = makePilot();
+    const invalidContext = { ...context, actor: { type: "user", reference: "" } } as RequestContext;
+    const result = await deps.pilot.execute(invalidContext, request);
+    expect(result.status).toBe("failed");
+    expect(deps.policyAllows).not.toHaveBeenCalled();
     expect(deps.adapterExecute).not.toHaveBeenCalled();
   });
 
@@ -60,18 +70,40 @@ describe("Build 46 first integration pilot", () => {
     const second = await deps.pilot.execute({ ...context, requestId: "req-002" }, {
       ...request, requestId: "req-002",
     });
-    expect(second.status).toBe("duplicate");
+    expect(second).toEqual({ status: "duplicate", originalRequestId: "req-001" });
     expect(deps.adapterExecute).toHaveBeenCalledTimes(1);
   });
 
-  it("returns explicit failure when adapter or event recording fails", async () => {
-    const adapterExecute = vi.fn(async () => { throw new Error("synthetic failure"); });
-    const pilot = new FirstIntegrationPilot({
-      policyAllows: async () => true,
-      adapterExecute,
-      recordEvent: async () => {},
+  it("allows retry after adapter execution fails before a downstream side effect is confirmed", async () => {
+    const adapterExecute = vi.fn()
+      .mockRejectedValueOnce(new Error("synthetic failure"))
+      .mockResolvedValueOnce({ downstreamReference: "simulated-task-002" });
+    const recordEvent = vi.fn(async (_event: PlatformEvent) => {});
+    const pilot = new FirstIntegrationPilot({ policyAllows: async () => true, adapterExecute, recordEvent });
+
+    const first = await pilot.execute(context, request);
+    const second = await pilot.execute(context, request);
+
+    expect(first).toEqual({ status: "failed", reason: "ADAPTER_EXECUTION_FAILED" });
+    expect(second.status).toBe("completed");
+    expect(adapterExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires reconciliation and blocks blind retry when event recording fails after execution", async () => {
+    const adapterExecute = vi.fn(async () => ({ downstreamReference: "simulated-task-003" }));
+    const recordEvent = vi.fn(async (_event: PlatformEvent) => { throw new Error("ledger unavailable"); });
+    const pilot = new FirstIntegrationPilot({ policyAllows: async () => true, adapterExecute, recordEvent });
+
+    const first = await pilot.execute(context, request);
+    const retry = await pilot.execute({ ...context, requestId: "req-002" }, { ...request, requestId: "req-002" });
+
+    expect(first).toEqual({
+      status: "reconciliation_required",
+      reason: "EVENT_RECORDING_FAILED_AFTER_EXECUTION",
+      downstreamReference: "simulated-task-003",
+      eventId: "pilot-event:req-001",
     });
-    const result = await pilot.execute(context, request);
-    expect(result).toEqual({ status: "failed", reason: "ADAPTER_OR_EVENT_RECORDING_FAILED" });
+    expect(retry).toEqual({ status: "duplicate", originalRequestId: "req-001" });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
   });
 });

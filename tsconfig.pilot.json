@@ -48,6 +48,9 @@
     "builds/59-nova-deployment-attestation-service/src/deployment-attestation-service.ts",
     "builds/59-nova-deployment-attestation-service/tests/deployment-attestation-service.test.ts",
     "builds/61-nova-client-case-workspace/src/client-case-workspace.ts",
-    "builds/61-nova-client-case-workspace/tests/client-case-workspace.test.ts"
+    "builds/61-nova-client-case-workspace/tests/client-case-workspace.test.ts",
+    "builds/62-nova-durable-workspace/src/postgres-workspace-store.ts",
+    "builds/62-nova-durable-workspace/src/workspace-api.ts",
+    "builds/62-nova-durable-workspace/tests/postgres-workspace.integration.test.ts"
   ]
 }

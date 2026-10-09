@@ -31,6 +31,8 @@
     "builds/52-nova-recovery-operator-console/src/recovery-operator-console.ts",
     "builds/52-nova-recovery-operator-console/tests/recovery-operator-console.integration.test.ts",
     "builds/53-nova-recovery-operations-dashboard/src/recovery-escalations.ts",
-    "builds/53-nova-recovery-operations-dashboard/tests/recovery-escalations.integration.test.ts"
+    "builds/53-nova-recovery-operations-dashboard/tests/recovery-escalations.integration.test.ts",
+    "builds/54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api.ts",
+    "builds/54-nova-recovery-operations-dashboard-ui/tests/recovery-operations-api.test.ts"
   ]
 }

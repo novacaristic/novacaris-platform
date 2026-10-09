@@ -25,6 +25,8 @@
     "builds/48-nova-end-to-end-recovery-proof/tests/pilot-postgres.integration.test.ts",
     "builds/49-nova-crash-window-recovery-proof/tests/crash-window.integration.test.ts",
     "builds/50-nova-reconciliation-recovery-control/src/reconciliation-control.ts",
-    "builds/50-nova-reconciliation-recovery-control/tests/reconciliation-control.integration.test.ts"
+    "builds/50-nova-reconciliation-recovery-control/tests/reconciliation-control.integration.test.ts",
+    "builds/51-nova-governed-recovery-execution/src/governed-recovery-execution.ts",
+    "builds/51-nova-governed-recovery-execution/tests/governed-recovery-execution.integration.test.ts"
   ]
 }

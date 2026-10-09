@@ -156,7 +156,7 @@ export class PostgresPilotOperationStore implements PilotOperationStore {
         `INSERT INTO nova_pilot_outbox
           (tenant_id, operation_id, event_id, event_type, event_version, correlation_id, payload)
          VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (tenant_id, event_id) DO NOTHING`,
+         ON CONFLICT (operation_id, event_id) DO NOTHING`,
         [event.tenantId, operation.id, event.eventId, event.eventType, event.eventVersion, event.correlationId, JSON.stringify(event)],
       );
       await client.query("COMMIT");
@@ -199,7 +199,7 @@ export class PostgresPilotOperationStore implements PilotOperationStore {
         `INSERT INTO nova_pilot_outbox
           (tenant_id, operation_id, event_id, event_type, event_version, correlation_id, payload)
          VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (tenant_id, event_id) DO NOTHING`,
+         ON CONFLICT (operation_id, event_id) DO NOTHING`,
         [event.tenantId, operation.id, event.eventId, event.eventType, event.eventVersion, event.correlationId, JSON.stringify(event)],
       );
       await client.query("COMMIT");

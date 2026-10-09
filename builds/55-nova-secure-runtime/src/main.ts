@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import type { RequestContext } from "../../../builds/44-shared-platform-foundation/src/contracts";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { RecoveryOperationsApi, type AuthenticatedContextResolver } from "../../../builds/54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api";
@@ -8,7 +9,7 @@ import { createRecoveryHttpServer } from "./recovery-http-server";
 
 interface HostSecurityAdapter {
   resolveContext: AuthenticatedContextResolver;
-  authorize: (context: Parameters<ConstructorParameters<typeof RecoveryOperatorConsole>[1]>[0], action: string) => Promise<boolean>;
+  authorize: (context: RequestContext, action: string) => Promise<boolean>;
 }
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();

@@ -7,6 +7,7 @@ export interface ApiRequest {
   path: string;
   query?: Record<string, string | undefined>;
   body?: unknown;
+  headers?: Record<string, string | undefined>;
 }
 export interface ApiResponse<T = unknown> { status: number; body: T }
 export type AuthenticatedContextResolver = (request: ApiRequest) => Promise<RequestContext | null>;

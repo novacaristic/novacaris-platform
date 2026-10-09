@@ -28,6 +28,12 @@ describe("Build 55 secure HTTP runtime", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect((await response.json()).status).toBe("healthy");
   });
+  it("reports not-ready when readiness is not configured and ready when checks pass", async () => {
+    await start();
+    const absent = await fetch(base + "/readyz");
+    expect(absent.status).toBe(503);
+    expect((await absent.json()).reason).toBe("READINESS_CHECK_NOT_CONFIGURED");
+  });
   it("rejects cross-origin and missing-origin mutation requests before API routing", async () => {
     await start();
     const spy = vi.spyOn(RecoveryOperationsApi.prototype, "handle");

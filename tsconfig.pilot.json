@@ -38,6 +38,10 @@
     "builds/55-nova-secure-runtime/src/main.ts",
     "builds/55-nova-secure-runtime/tests/recovery-http-server.test.ts",
     "builds/56-nova-deployment-readiness/src/deployment-readiness.ts",
-    "builds/56-nova-deployment-readiness/tests/deployment-readiness.test.ts"
+    "builds/56-nova-deployment-readiness/tests/deployment-readiness.test.ts",
+    "builds/57-nova-deployment-evidence-ledger/src/release-gate.ts",
+    "builds/57-nova-deployment-evidence-ledger/src/deployment-evidence-ledger.ts",
+    "builds/57-nova-deployment-evidence-ledger/tests/release-gate.test.ts",
+    "builds/57-nova-deployment-evidence-ledger/tests/deployment-evidence-ledger.integration.test.ts"
   ]
 }

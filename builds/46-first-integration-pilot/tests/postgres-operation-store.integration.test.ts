@@ -167,5 +167,40 @@ suite("Build 46 live PostgreSQL integration", () => {
     expect(row.rows[0].lease_owner).toBeNull();
     expect(row.rows[0].lease_until).toBeNull();
   });
+  it("recovers an expired worker lease without re-running the original operation", async () => {
+    const recoveryEvent: PlatformEvent = { ...event, eventId: "integration-event-expired-lease" };
+    await pool.query("INSERT INTO nova_pilot_outbox (tenant_id, operation_id, event_id, event_type, event_version, correlation_id, payload) SELECT tenant_id, id, $2, $3, $4, $5, $6::jsonb FROM nova_pilot_operations WHERE tenant_id = $1::uuid AND operation_name = $7 AND idempotency_key = $8", [tenantId, recoveryEvent.eventId, recoveryEvent.eventType, recoveryEvent.eventVersion, recoveryEvent.correlationId, JSON.stringify(recoveryEvent), operationName, idempotencyKey]);
+    const store = new PostgresOutboxStore(pool);
+    const firstClaim = await store.claimBatch("crashed-worker", 10, 30);
+    expect(firstClaim.map(row => row.event_id)).toContain(recoveryEvent.eventId);
+    const claimed = firstClaim.find(row => row.event_id === recoveryEvent.eventId)!;
+    await pool.query("UPDATE nova_pilot_outbox SET lease_until = now() - interval '1 second' WHERE id = $1::uuid", [claimed.id]);
+    const secondClaim = await store.claimBatch("recovery-worker", 10, 30);
+    const recovered = secondClaim.find(row => row.event_id === recoveryEvent.eventId);
+    expect(recovered).toBeDefined();
+    expect(recovered?.lease_owner).toBe("recovery-worker");
+    expect(recovered?.attempt_count).toBe(2);
+    expect(recovered?.event_id).toBe(recoveryEvent.eventId);
+    const originalOperation = await pool.query("SELECT status, result FROM nova_pilot_operations WHERE tenant_id = $1::uuid AND operation_name = $2 AND idempotency_key = $3", [tenantId, operationName, idempotencyKey]);
+    expect(originalOperation.rows[0].status).toBe("completed");
+    expect(originalOperation.rows[0].result.downstreamReference).toBe("synthetic-downstream-001");
+  });
+
+  it("moves an event to dead-letter after the configured retry limit", async () => {
+    const deadLetterEvent: PlatformEvent = { ...event, eventId: "integration-event-dead-letter" };
+    await pool.query("INSERT INTO nova_pilot_outbox (tenant_id, operation_id, event_id, event_type, event_version, correlation_id, payload) SELECT tenant_id, id, $2, $3, $4, $5, $6::jsonb FROM nova_pilot_operations WHERE tenant_id = $1::uuid AND operation_name = $7 AND idempotency_key = $8", [tenantId, deadLetterEvent.eventId, deadLetterEvent.eventType, deadLetterEvent.eventVersion, deadLetterEvent.correlationId, JSON.stringify(deadLetterEvent), operationName, idempotencyKey]);
+    const store = new PostgresOutboxStore(pool);
+    const first = await dispatchOutboxBatch({ store, workerId: "dead-letter-worker-1", maxAttempts: 2, deliver: async () => { throw new Error("synthetic repeated failure"); } });
+    expect(first.retryScheduled).toBe(1);
+    await pool.query("UPDATE nova_pilot_outbox SET next_attempt_at = now() - interval '1 second' WHERE tenant_id = $1::uuid AND event_id = $2", [tenantId, deadLetterEvent.eventId]);
+    const second = await dispatchOutboxBatch({ store, workerId: "dead-letter-worker-2", maxAttempts: 2, deliver: async () => { throw new Error("synthetic repeated failure"); } });
+    expect(second.deadLettered).toBe(1);
+    const row = await pool.query("SELECT status, attempt_count, last_error, lease_owner, lease_until FROM nova_pilot_outbox WHERE tenant_id = $1::uuid AND event_id = $2", [tenantId, deadLetterEvent.eventId]);
+    expect(row.rows[0].status).toBe("dead_letter");
+    expect(row.rows[0].attempt_count).toBe(2);
+    expect(row.rows[0].last_error).toBe("synthetic repeated failure");
+    expect(row.rows[0].lease_owner).toBeNull();
+    expect(row.rows[0].lease_until).toBeNull();
+  });
 
 });

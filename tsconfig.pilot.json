@@ -33,6 +33,9 @@
     "builds/53-nova-recovery-operations-dashboard/src/recovery-escalations.ts",
     "builds/53-nova-recovery-operations-dashboard/tests/recovery-escalations.integration.test.ts",
     "builds/54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api.ts",
-    "builds/54-nova-recovery-operations-dashboard-ui/tests/recovery-operations-api.test.ts"
+    "builds/54-nova-recovery-operations-dashboard-ui/tests/recovery-operations-api.test.ts",
+    "builds/55-nova-secure-runtime/src/recovery-http-server.ts",
+    "builds/55-nova-secure-runtime/src/main.ts",
+    "builds/55-nova-secure-runtime/tests/recovery-http-server.test.ts"
   ]
 }

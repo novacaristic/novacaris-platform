@@ -13,7 +13,23 @@ jobs:
   pilot-tests:
     name: Build 46 + Build 47 pilot verification
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: postgresql://nova_test:nova_test_password@localhost:5432/novacaris_test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nova_test
+          POSTGRES_PASSWORD: nova_test_password
+          POSTGRES_DB: novacaris_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nova_test -d novacaris_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,5 +45,5 @@ jobs:
       - name: Type-check pilot source and tests
         run: npm run typecheck:pilot
 
-      - name: Run pilot tests
+      - name: Run pilot tests including live PostgreSQL
         run: npm run test:pilot -- --reporter=verbose

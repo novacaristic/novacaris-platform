@@ -86,7 +86,7 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
       const body = method === "POST" ? await readBody(request) : undefined;
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => { query[key] = value; });
-      const apiRequest: ApiRequest = { method, path: url.pathname, query, body };
+      const apiRequest: ApiRequest = { method, path: url.pathname, query, body, headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : value])) };
       const result: ApiResponse = url.pathname.startsWith("/api/workspace") && options.workspaceApi
         ? await options.workspaceApi.handle(apiRequest)
         : await options.api.handle(apiRequest);

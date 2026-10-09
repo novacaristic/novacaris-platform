@@ -141,7 +141,7 @@ describe("Build 46 durable execution pilot", () => {
     expect(result.status).toBe("reconciliation_required");
     expect(adapter).toHaveBeenCalledTimes(1);
     const retry = await makePilot(store, true, adapter).pilot.execute({ ...context, requestId: "req-002" }, { ...request, requestId: "req-002" });
-    expect(retry.status).toBe("in_progress");
+    expect(retry.status).toBe("reconciliation_required");
     expect(adapter).toHaveBeenCalledTimes(1);
   });
 

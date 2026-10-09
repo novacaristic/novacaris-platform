@@ -116,4 +116,56 @@ suite("Build 46 live PostgreSQL integration", () => {
     expect(row.rows[0].status).toBe("in_progress");
     await pool.query("DELETE FROM nova_pilot_operations WHERE tenant_id = $1::uuid AND operation_name = $2 AND idempotency_key = $3", [tenantId, operationName, otherKey]);
   });
+
+  it("claims and delivers outbox events from PostgreSQL, then persists delivery state", async () => {
+    const store = new PostgresOutboxStore(pool);
+    const delivery = await dispatchOutboxBatch({
+      store,
+      workerId: "integration-worker-1",
+      limit: 10,
+      leaseSeconds: 30,
+      deliver: async (deliveredEvent) => {
+        expect(deliveredEvent.eventId).toBe(event.eventId);
+      },
+    });
+    expect(delivery.claimed).toBe(1);
+    expect(delivery.delivered).toBe(1);
+    const row = await secondPool.query(
+      "SELECT status, attempt_count, lease_owner, lease_until FROM nova_pilot_outbox WHERE tenant_id = $1::uuid AND event_id = $2",
+      [tenantId, event.eventId],
+    );
+    expect(row.rows[0].status).toBe("delivered");
+    expect(row.rows[0].attempt_count).toBe(1);
+    expect(row.rows[0].lease_owner).toBeNull();
+    expect(row.rows[0].lease_until).toBeNull();
+  });
+
+  it("schedules a failed delivery for retry with bounded attempts", async () => {
+    const retryEvent: PlatformEvent = { ...event, eventId: "integration-event-retry" };
+    await pool.query(
+      `INSERT INTO nova_pilot_outbox
+        (tenant_id, operation_id, event_id, event_type, event_version, correlation_id, payload)
+       SELECT tenant_id, id, $2, $3, $4, $5, $6::jsonb
+         FROM nova_pilot_operations
+        WHERE tenant_id = $1::uuid AND operation_name = $7 AND idempotency_key = $8`,
+      [tenantId, retryEvent.eventId, retryEvent.eventType, retryEvent.eventVersion, retryEvent.correlationId, JSON.stringify(retryEvent), operationName, idempotencyKey],
+    );
+    const summary = await dispatchOutboxBatch({
+      store: new PostgresOutboxStore(pool),
+      workerId: "integration-worker-retry",
+      maxAttempts: 2,
+      deliver: async () => { throw new Error("synthetic sink failure"); },
+    });
+    expect(summary.retryScheduled).toBe(1);
+    const row = await pool.query(
+      "SELECT status, attempt_count, last_error, lease_owner, lease_until FROM nova_pilot_outbox WHERE tenant_id = $1::uuid AND event_id = $2",
+      [tenantId, retryEvent.eventId],
+    );
+    expect(row.rows[0].status).toBe("pending");
+    expect(row.rows[0].attempt_count).toBe(1);
+    expect(row.rows[0].last_error).toBe("synthetic sink failure");
+    expect(row.rows[0].lease_owner).toBeNull();
+    expect(row.rows[0].lease_until).toBeNull();
+  });
+
 });

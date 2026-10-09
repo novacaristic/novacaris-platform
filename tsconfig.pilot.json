@@ -44,6 +44,8 @@
     "builds/57-nova-deployment-evidence-ledger/tests/release-gate.test.ts",
     "builds/57-nova-deployment-evidence-ledger/tests/deployment-evidence-ledger.integration.test.ts",
     "builds/58-nova-signed-release-attestation/src/provenance-attestation.ts",
-    "builds/58-nova-signed-release-attestation/tests/provenance-attestation.test.ts"
+    "builds/58-nova-signed-release-attestation/tests/provenance-attestation.test.ts",
+    "builds/59-nova-deployment-attestation-service/src/deployment-attestation-service.ts",
+    "builds/59-nova-deployment-attestation-service/tests/deployment-attestation-service.test.ts"
   ]
 }

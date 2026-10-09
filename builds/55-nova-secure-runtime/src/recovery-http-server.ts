@@ -86,7 +86,7 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => { query[key] = value; });
       const apiRequest: ApiRequest = { method, path: url.pathname, query, body };
-      const result: ApiResponse = await options.api.handle(apiRequest);
+      const result: ApiResponse = url.pathname.startsWith("/api/workspace") && options.workspaceApi\n        ? await options.workspaceApi.handle(apiRequest)\n        : await options.api.handle(apiRequest);
       send(response, result.status, result.body);
     } catch (error) {
       const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;

@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: nova_demo
+      POSTGRES_PASSWORD: nova_demo_local_only
+      POSTGRES_DB: novacaris_demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - nova62_pgdata:/var/lib/postgresql/data
+      - ./builds/62-nova-durable-workspace/sql/build_62_workspace.sql:/docker-entrypoint-initdb.d/01-workspace.sql:ro
+      - ./builds/62-nova-durable-workspace/sql/seed_local_demo.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nova_demo -d novacaris_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://nova_demo:nova_demo_local_only@postgres:5432/novacaris_demo
+      NOVA_SECURITY_ADAPTER_MODULE: /app/builds/62-nova-durable-workspace/demo/security-adapter.mjs
+      NOVA_ALLOWED_ORIGIN: http://localhost:8080
+      PORT: "8080"
+      HOST: 0.0.0.0
+    ports:
+      - "8080:8080"
+volumes:
+  nova62_pgdata:

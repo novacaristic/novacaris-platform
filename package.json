@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck"
+    "check": "npm run typecheck",
+    "test:pilot": "vitest run builds/46-first-integration-pilot/tests/pilot.test.ts builds/47-pilot-execution-evidence-runner/tests/evidence.test.ts"
   },
   "devDependencies": {
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
   }
 }

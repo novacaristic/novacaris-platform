@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ApiRequest, ApiResponse } from "../../../builds/54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api";
 import { RecoveryOperationsApi } from "../../../builds/54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api";
-import type { DeploymentReadiness } from "../../../builds/56-nova-deployment-readiness/src/deployment-readiness";
+import type { DependencyReadiness } from "../../../builds/56-nova-deployment-readiness/src/deployment-readiness";
 
 const MAX_BODY_BYTES = 64 * 1024;
 export interface RecoveryRuntimeOptions {
@@ -11,7 +11,7 @@ export interface RecoveryRuntimeOptions {
   uiPath?: string;
   allowedOrigin?: string;
   serviceName?: string;
-  readiness?: DeploymentReadiness;
+  readiness?: { check(): Promise<DependencyReadiness> };
 }
 function send(response: ServerResponse, status: number, body: unknown, contentType = "application/json; charset=utf-8"): void {
   response.statusCode = status;

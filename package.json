@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck",
-    "test:pilot": "vitest run builds/46-first-integration-pilot/tests/pilot.test.ts builds/46-first-integration-pilot/tests/postgres-operation-store.test.ts builds/46-first-integration-pilot/tests/postgres-outbox-dispatcher.test.ts builds/46-first-integration-pilot/tests/postgres-operation-store.integration.test.ts builds/47-pilot-execution-evidence-runner/tests/evidence.test.ts builds/48-nova-end-to-end-recovery-proof/tests/pilot-postgres.integration.test.ts",
+    "test:pilot": "vitest run --fileParallelism=false builds/46-first-integration-pilot/tests/pilot.test.ts builds/46-first-integration-pilot/tests/postgres-operation-store.test.ts builds/46-first-integration-pilot/tests/postgres-outbox-dispatcher.test.ts builds/46-first-integration-pilot/tests/postgres-operation-store.integration.test.ts builds/47-pilot-execution-evidence-runner/tests/evidence.test.ts builds/48-nova-end-to-end-recovery-proof/tests/pilot-postgres.integration.test.ts",
     "typecheck:pilot": "tsc --noEmit -p tsconfig.pilot.json",
     "check:pilot": "npm run typecheck:pilot && npm run test:pilot"
   },

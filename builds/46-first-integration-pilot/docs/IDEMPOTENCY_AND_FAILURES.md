@@ -26,3 +26,18 @@ The outbox dispatcher must retry delivery with bounded backoff, dead-letter repe
 ## Safety boundary
 
 This pilot is synthetic-only. It does not authorize real EHR writes or process patient records. Ambiguous external outcomes require a downstream idempotency lookup or authorized human reconciliation before any retry.
+
+
+## Durable outbox dispatcher
+
+The PostgreSQL outbox dispatcher lives in `src/postgres-outbox-dispatcher.ts`.
+
+- Claims due rows using `FOR UPDATE SKIP LOCKED` and a bounded lease.
+- Persists lease ownership and increments delivery attempts at claim time.
+- Only the current lease owner can mark a row delivered or failed.
+- Temporary delivery failures are rescheduled with bounded exponential backoff.
+- Exhausted deliveries move to `dead_letter`; the original downstream operation is not re-executed.
+- Expired or missing leases can be reclaimed after worker interruption.
+- Delivery is at-least-once. Consumers must deduplicate using the stable event ID; a worker crash after delivery but before acknowledgement can cause redelivery.
+
+CI starts PostgreSQL 16 and exercises reservation concurrency, atomic operation/outbox persistence, rollback, event delivery, retry scheduling and durable delivery state. These tests use synthetic fixtures and do not authorize live EHR writes.

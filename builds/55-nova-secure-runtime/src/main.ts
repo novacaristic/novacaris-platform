@@ -6,7 +6,7 @@ import { RecoveryOperationsApi, type AuthenticatedContextResolver } from "../../
 import { RecoveryOperatorConsole } from "../../../builds/52-nova-recovery-operator-console/src/recovery-operator-console";
 import { RecoveryEscalations } from "../../../builds/53-nova-recovery-operations-dashboard/src/recovery-escalations";
 import { createRecoveryHttpServer } from "./recovery-http-server";
-import { createDeploymentReadiness } from "../../../builds/56-nova-deployment-readiness/src/deployment-readiness";
+import { checkDatabaseReadiness, validateRuntimeConfiguration } from "../../../builds/56-nova-deployment-readiness/src/deployment-readiness";
 
 interface HostSecurityAdapter {
   resolveContext: AuthenticatedContextResolver;
@@ -20,8 +20,10 @@ function requiredEnv(name: string): string {
 async function main(): Promise<void> {
   const databaseUrl = requiredEnv("DATABASE_URL");
   const securityModulePath = requiredEnv("NOVA_SECURITY_ADAPTER_MODULE");
+  const allowedOrigin = requiredEnv("NOVA_ALLOWED_ORIGIN");
+  const config = validateRuntimeConfiguration({ databaseUrl, securityAdapterModule: securityModulePath, allowedOrigin, port: process.env.PORT, dbPoolMax: process.env.DB_POOL_MAX });
+  if (!config.ready) throw new Error(`STARTUP_BLOCKED_CONFIGURATION:${config.blockers.join(",")}`);
   const port = Number(process.env.PORT ?? "8080");
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("STARTUP_BLOCKED_INVALID_PORT");
   const securityUrl = pathToFileURL(resolve(securityModulePath)).href;
   const security = await import(securityUrl) as Partial<HostSecurityAdapter>;
   if (typeof security.resolveContext !== "function" || typeof security.authorize !== "function") {
@@ -33,8 +35,8 @@ async function main(): Promise<void> {
   const operators = new RecoveryOperatorConsole(pool, (context, action) => authorize(context, action));
   const escalations = new RecoveryEscalations(pool, (context, action) => authorize(context, action));
   const api = new RecoveryOperationsApi(security.resolveContext as AuthenticatedContextResolver, operators, escalations);
-  const readiness = createDeploymentReadiness({ checkDatabase: async () => { await pool.query("SELECT 1"); } });
-  const server = createRecoveryHttpServer({ api, readiness, allowedOrigin: process.env.NOVA_ALLOWED_ORIGIN });
+  const readiness = { check: () => checkDatabaseReadiness(async () => { await pool.query("SELECT 1"); }) };
+  const server = createRecoveryHttpServer({ api, readiness, allowedOrigin });
   server.listen(port, process.env.HOST ?? "0.0.0.0", () => process.stdout.write(`nova_recovery_runtime_listening port=${port}\n`));
   const shutdown = (signal: string) => {
     process.stdout.write(`nova_recovery_runtime_shutdown signal=${signal}\n`);

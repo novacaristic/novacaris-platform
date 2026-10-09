@@ -34,6 +34,20 @@ describe("Build 55 secure HTTP runtime", () => {
     expect(absent.status).toBe(503);
     expect((await absent.json()).reason).toBe("READINESS_CHECK_NOT_CONFIGURED");
   });
+  it("reports database readiness from the injected dependency probe", async () => {
+    const api = new RecoveryOperationsApi(async () => null, {} as never, {} as never);
+    server = createRecoveryHttpServer({ api, uiPath: "/path/that/does/not/exist", readiness: { check: async () => ({ status: "ready", checkedAt: "2026-10-09T00:00:00.000Z", dependencies: [{ name: "postgresql", status: "ready", detail: "SELECT 1 succeeded." }] }) } });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("TEST_SERVER_ADDRESS_MISSING");
+    base = `http://127.0.0.1:${address.port}`;
+    const response = await fetch(base + "/readyz");
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.status).toBe("ready");
+    expect(body.dependencies[0].name).toBe("postgresql");
+  });
   it("rejects cross-origin and missing-origin mutation requests before API routing", async () => {
     await start();
     const spy = vi.spyOn(RecoveryOperationsApi.prototype, "handle");

@@ -18,7 +18,8 @@ export type PilotResult =
   | { status: "completed"; downstreamReference: string; eventId: string }
   | { status: "denied"; reason: string }
   | { status: "duplicate"; originalRequestId: string }
-  | { status: "failed"; reason: string };
+  | { status: "failed"; reason: string }
+  | { status: "reconciliation_required"; reason: "EVENT_RECORDING_FAILED_AFTER_EXECUTION"; downstreamReference: string; eventId: string };
 
 export class FirstIntegrationPilot {
   private readonly idempotency = new Map<string, { requestId: string; result: PilotResult }>();
@@ -33,7 +34,7 @@ export class FirstIntegrationPilot {
     if (context.tenantId !== request.tenantId) {
       return { status: "denied", reason: "TENANT_CONTEXT_MISMATCH" };
     }
-    if (!request.requestId || !request.idempotencyKey || !request.payload.fixtureId) {
+    if (!request.requestId || !request.idempotencyKey || !request.payload?.fixtureId) {
       return { status: "failed", reason: "REQUIRED_REQUEST_FIELDS_MISSING" };
     }
 
@@ -50,35 +51,52 @@ export class FirstIntegrationPilot {
       return result;
     }
 
+    let downstream: { downstreamReference: string };
     try {
-      const downstream = await this.deps.adapterExecute(request);
-      const eventId = `pilot-event:${request.requestId}`;
-      const event: PlatformEvent = {
-        eventId,
-        eventType: "pilot.operation.completed",
-        eventVersion: "1.0",
-        occurredAt: new Date().toISOString(),
-        tenantId: context.tenantId,
-        actorReference: context.actor.reference,
-        correlationId: context.correlationId,
-        idempotencyKey: request.idempotencyKey,
-        payload: {
-          requestId: request.requestId,
-          operation: request.operation,
-          downstreamReference: downstream.downstreamReference,
-          fixtureId: request.payload.fixtureId,
-        },
-      };
+      downstream = await this.deps.adapterExecute(request);
+    } catch {
+      return { status: "failed", reason: "ADAPTER_EXECUTION_FAILED" };
+    }
+
+    const eventId = `pilot-event:${request.requestId}`;
+    const event: PlatformEvent = {
+      eventId,
+      eventType: "pilot.operation.completed",
+      eventVersion: "1.0",
+      occurredAt: new Date().toISOString(),
+      tenantId: context.tenantId,
+      actorReference: context.actor.reference,
+      correlationId: context.correlationId,
+      idempotencyKey: request.idempotencyKey,
+      payload: {
+        requestId: request.requestId,
+        operation: request.operation,
+        downstreamReference: downstream.downstreamReference,
+        fixtureId: request.payload.fixtureId,
+      },
+    };
+
+    try {
       await this.deps.recordEvent(event);
+    } catch {
+      // The external side effect already happened. Cache a reconciliation state
+      // so retries cannot blindly repeat the downstream operation.
       const result: PilotResult = {
-        status: "completed",
+        status: "reconciliation_required",
+        reason: "EVENT_RECORDING_FAILED_AFTER_EXECUTION",
         downstreamReference: downstream.downstreamReference,
         eventId,
       };
       this.idempotency.set(idempotencyScope, { requestId: request.requestId, result });
       return result;
-    } catch {
-      return { status: "failed", reason: "ADAPTER_OR_EVENT_RECORDING_FAILED" };
     }
+
+    const result: PilotResult = {
+      status: "completed",
+      downstreamReference: downstream.downstreamReference,
+      eventId,
+    };
+    this.idempotency.set(idempotencyScope, { requestId: request.requestId, result });
+    return result;
   }
 }

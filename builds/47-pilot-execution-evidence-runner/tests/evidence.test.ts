@@ -5,7 +5,7 @@ const passedRun = {
   runId: "run-001",
   sourceRevision: "0123456789abcdef0123456789abcdef01234567",
   environment: "ci",
-  command: "npm test -- --run",
+  command: "npm run test:pilot",
   startedAt: "2026-10-08T12:00:00.000Z",
   completedAt: "2026-10-08T12:00:02.000Z",
   status: "passed" as const,
@@ -37,5 +37,24 @@ describe("Build 47 evidence validation", () => {
     const result = validateRunEvidence({ ...passedRun, passed: -1 });
     expect(result.valid).toBe(false);
     expect(result.blockers).toContain("TEST_COUNTS_CANNOT_BE_NEGATIVE");
+  });
+
+  it("rejects passed evidence that contains failed tests", () => {
+    const result = validateRunEvidence({ ...passedRun, failed: 1 });
+    expect(result.valid).toBe(false);
+    expect(result.blockers).toContain("FAILED_TESTS_PRESENT");
+  });
+
+  it("rejects passed evidence without completion time", () => {
+    const result = validateRunEvidence({ ...passedRun, completedAt: undefined });
+    expect(result.valid).toBe(false);
+    expect(result.blockers).toContain("COMPLETION_TIME_REQUIRED");
+  });
+
+  it("rejects empty identity and command fields", () => {
+    const result = validateRunEvidence({ ...passedRun, runId: " ", command: "" });
+    expect(result.valid).toBe(false);
+    expect(result.blockers).toContain("RUN_ID_REQUIRED");
+    expect(result.blockers).toContain("COMMAND_REQUIRED");
   });
 });

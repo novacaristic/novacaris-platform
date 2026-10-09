@@ -166,7 +166,10 @@ suite("Build 46 live PostgreSQL integration", () => {
     expect(row.rows[0].last_error).toBe("synthetic sink failure");
     expect(row.rows[0].lease_owner).toBeNull();
     expect(row.rows[0].lease_until).toBeNull();
+    // Keep this retry fixture from being claimed by later recovery tests.
+    await pool.query("UPDATE nova_pilot_outbox SET status = 'dead_letter' WHERE tenant_id = $1::uuid AND event_id = $2", [tenantId, retryEvent.eventId]);
   });
+
   it("recovers an expired worker lease without re-running the original operation", async () => {
     const recoveryEvent: PlatformEvent = { ...event, eventId: "integration-event-expired-lease" };
     await pool.query("INSERT INTO nova_pilot_outbox (tenant_id, operation_id, event_id, event_type, event_version, correlation_id, payload) SELECT tenant_id, id, $2, $3, $4, $5, $6::jsonb FROM nova_pilot_operations WHERE tenant_id = $1::uuid AND operation_name = $7 AND idempotency_key = $8", [tenantId, recoveryEvent.eventId, recoveryEvent.eventType, recoveryEvent.eventVersion, recoveryEvent.correlationId, JSON.stringify(recoveryEvent), operationName, idempotencyKey]);

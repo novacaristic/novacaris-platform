@@ -8,6 +8,7 @@ import type { DependencyReadiness } from "../../../builds/56-nova-deployment-rea
 const MAX_BODY_BYTES = 64 * 1024;
 export interface RecoveryRuntimeOptions {
   api: RecoveryOperationsApi;
+  workspaceApi?: { handle(request: ApiRequest): Promise<ApiResponse> };
   uiPath?: string;
   allowedOrigin?: string;
   serviceName?: string;
@@ -86,7 +87,9 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => { query[key] = value; });
       const apiRequest: ApiRequest = { method, path: url.pathname, query, body };
-      const result: ApiResponse = url.pathname.startsWith("/api/workspace") && options.workspaceApi\n        ? await options.workspaceApi.handle(apiRequest)\n        : await options.api.handle(apiRequest);
+      const result: ApiResponse = url.pathname.startsWith("/api/workspace") && options.workspaceApi
+        ? await options.workspaceApi.handle(apiRequest)
+        : await options.api.handle(apiRequest);
       send(response, result.status, result.body);
     } catch (error) {
       const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;

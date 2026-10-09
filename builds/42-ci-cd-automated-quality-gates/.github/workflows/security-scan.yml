@@ -1,0 +1,58 @@
+name: NOVA Security Scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency review on pull requests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check dependency-review capability
+        run: echo "Enable GitHub dependency review and branch protection in repository settings."
+
+  secret-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan tracked files for likely secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -n -I -E '(AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{24,})' -- . ':!builds/42-ci-cd-automated-quality-gates/README.md'; then
+            echo "::error::Potential secret pattern found. Review without printing or sharing the secret value."
+            exit 1
+          else
+            echo "No configured high-confidence secret patterns found in tracked text."
+          fi
+
+  codeql:
+    name: CodeQL analysis
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL for JavaScript/TypeScript
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Pool } from "pg";
 import { PostgresPilotOperationStore } from "../src/postgres-operation-store";
+import { dispatchOutboxBatch, PostgresOutboxStore } from "../src/postgres-outbox-dispatcher";
 import type { PilotOperation } from "../src/pilot";
 import type { PlatformEvent } from "../../44-shared-platform-foundation/src/contracts";
 

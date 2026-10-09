@@ -1,7 +1,7 @@
 import type { WorkspaceContext, WorkspaceNote, WorkspaceAuditEvent } from "../../61-nova-client-case-workspace/src/client-case-workspace";
 import { ClientCaseWorkspace, WorkspaceError } from "../../61-nova-client-case-workspace/src/client-case-workspace";
 
-export interface WorkspaceApiRequest { method:string; path:string; body?:unknown; }
+export interface WorkspaceApiRequest { method:string; path:string; body?:unknown; headers?:Record<string,string|undefined>; }
 export interface WorkspaceApiResponse { status:number; body:unknown; }
 export type WorkspaceContextResolver = (request:WorkspaceApiRequest)=>Promise<WorkspaceContext|null>;
 function bodyObject(v:unknown):Record<string,unknown>{if(!v||typeof v!=="object"||Array.isArray(v))throw new WorkspaceError("REQUEST_BODY_INVALID");return v as Record<string,unknown>;}

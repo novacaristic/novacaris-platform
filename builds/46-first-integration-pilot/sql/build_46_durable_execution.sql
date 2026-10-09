@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS nova_pilot_outbox (
   attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   next_attempt_at timestamptz NOT NULL DEFAULT now(),
   last_error text,
+  lease_owner text,
+  lease_until timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   delivered_at timestamptz,
   UNIQUE (tenant_id, event_id),
@@ -66,3 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_nova_pilot_operations_request
 -- 5. An ambiguous downstream timeout is NOT a safe retry. Mark reconciliation
 --    required until a downstream idempotency lookup or authorized human review
 --    resolves the outcome.
+
+-- Upgrade existing pilot installations safely.
+ALTER TABLE nova_pilot_outbox ADD COLUMN IF NOT EXISTS lease_owner text;
+ALTER TABLE nova_pilot_outbox ADD COLUMN IF NOT EXISTS lease_until timestamptz;

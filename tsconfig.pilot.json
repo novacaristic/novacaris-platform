@@ -23,6 +23,8 @@
     "builds/46-first-integration-pilot/tests/postgres-outbox-dispatcher.test.ts",
     "builds/46-first-integration-pilot/tests/postgres-operation-store.integration.test.ts",
     "builds/48-nova-end-to-end-recovery-proof/tests/pilot-postgres.integration.test.ts",
-    "builds/49-nova-crash-window-recovery-proof/tests/crash-window.integration.test.ts"
+    "builds/49-nova-crash-window-recovery-proof/tests/crash-window.integration.test.ts",
+    "builds/50-nova-reconciliation-recovery-control/src/reconciliation-control.ts",
+    "builds/50-nova-reconciliation-recovery-control/tests/reconciliation-control.integration.test.ts"
   ]
 }

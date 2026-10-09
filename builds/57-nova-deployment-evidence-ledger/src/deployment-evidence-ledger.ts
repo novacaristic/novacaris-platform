@@ -23,8 +23,8 @@ export class DeploymentEvidenceLedger {
     try {
       await client.query("BEGIN");
       const prior = await client.query(
-        "SELECT id, eligible, blockers, recorded_at FROM nova_deployment_evidence_ledger WHERE environment=$1 AND commit_sha=$2 AND smoke_run_id=$3 FOR UPDATE",
-        [input.environment, input.commitSha, runId],
+        "SELECT id, eligible, blockers, recorded_at FROM nova_deployment_evidence_ledger WHERE tenant_id=$1::uuid AND environment=$2 AND commit_sha=$3 AND smoke_run_id=$4 FOR UPDATE",
+        [context.tenantId, input.environment, input.commitSha, runId],
       );
       if (prior.rows[0]) {
         await client.query("COMMIT");
@@ -32,9 +32,9 @@ export class DeploymentEvidenceLedger {
       }
       const inserted = await client.query(
         `INSERT INTO nova_deployment_evidence_ledger
-          (environment, commit_sha, smoke_run_id, smoke_result, eligible, blockers, smoke_report, test_run_url, reviewer_actor, approval_reference)
-         VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10) RETURNING id, recorded_at`,
-        [input.environment, input.commitSha, runId, (validatedReport as { result?: string }).result === "passed" ? "passed" : "failed", gate.eligible, JSON.stringify(gate.blockers), JSON.stringify(validatedReport), input.testRunUrl, input.reviewerActor, input.approvalReference ?? null],
+          (tenant_id, environment, commit_sha, smoke_run_id, smoke_result, eligible, blockers, smoke_report, test_run_url, reviewer_actor, approval_reference)
+         VALUES ($1::uuid,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11) RETURNING id, recorded_at`,
+        [context.tenantId, input.environment, input.commitSha, runId, (validatedReport as { result?: string }).result === "passed" ? "passed" : "failed", gate.eligible, JSON.stringify(gate.blockers), JSON.stringify(validatedReport), input.testRunUrl, input.reviewerActor, input.approvalReference ?? null],
       );
       const row = inserted.rows[0];
       await client.query(
@@ -53,7 +53,7 @@ export class DeploymentEvidenceLedger {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const found = await client.query("SELECT id, eligible, approval_reference FROM nova_deployment_evidence_ledger WHERE id=$1 FOR UPDATE", [ledgerId]);
+      const found = await client.query("SELECT id, eligible, approval_reference FROM nova_deployment_evidence_ledger WHERE id=$1 AND tenant_id=$2::uuid FOR UPDATE", [ledgerId, context.tenantId]);
       const row = found.rows[0];
       if (!row) throw new Error("DEPLOYMENT_EVIDENCE_NOT_FOUND");
       if (!row.eligible) throw new Error("DEPLOYMENT_RELEASE_GATE_BLOCKED");

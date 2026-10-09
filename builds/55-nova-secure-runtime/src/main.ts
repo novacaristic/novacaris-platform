@@ -7,10 +7,14 @@ import { RecoveryOperatorConsole } from "../../../builds/52-nova-recovery-operat
 import { RecoveryEscalations } from "../../../builds/53-nova-recovery-operations-dashboard/src/recovery-escalations";
 import { createRecoveryHttpServer } from "./recovery-http-server";
 import { checkDatabaseReadiness, validateRuntimeConfiguration } from "../../../builds/56-nova-deployment-readiness/src/deployment-readiness";
+import { ClientCaseWorkspace, type WorkspaceContext } from "../../../builds/61-nova-client-case-workspace/src/client-case-workspace";
+import { PostgresWorkspaceStore } from "../../../builds/62-nova-durable-workspace/src/postgres-workspace-store";
+import { WorkspaceApi } from "../../../builds/62-nova-durable-workspace/src/workspace-api";
 
 interface HostSecurityAdapter {
   resolveContext: AuthenticatedContextResolver;
   authorize: (context: RequestContext, action: string) => Promise<boolean>;
+  resolveWorkspaceContext?: (request: {method:string;path:string;body?:unknown}) => Promise<WorkspaceContext | null>;
 }
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();

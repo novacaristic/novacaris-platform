@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { buildAttestationPayload, canonicalJson, verifyReleaseAttestation } from "../src/provenance-attestation";
+import { buildAttestationPayload, canonicalJson, evaluateSignedReleaseGate, verifyReleaseAttestation } from "../src/provenance-attestation";
 import type { SmokeReport } from "../../../builds/57-nova-deployment-evidence-ledger/src/release-gate";
 
 const report: SmokeReport = {schemaVersion:"1.0",reportType:"nova-deployment-smoke",runId:"smoke_run_1234",startedAt:"2026-10-09T08:00:00.000Z",completedAt:"2026-10-09T08:00:01.000Z",baseUrlConfigured:true,result:"passed",passedChecks:1,totalChecks:1,checks:[{name:"readiness",passed:true,status:200}],limitations:["HTTP checks only"]};
@@ -32,7 +32,7 @@ describe("Build 58 signed release provenance",()=>{
   const oldAtt={algorithm:"Ed25519",keyId:"ci-key-1",payload:old,signatureBase64:sign(null,Buffer.from(canonicalJson(old)),(generateKeyPairSync("ed25519")).privateKey).toString("base64")};
   expect(verifyReleaseAttestation({attestation:oldAtt,trustedKeys:f.trustedKeys,expected:f.expected,now:new Date("2026-10-09T08:01:00.000Z")}).blockers).toContain("ATTESTATION_EXPIRED");
  });
- it("rejects malformed attestations and future-dated payloads",()=>{
+ it("requires a valid signature as part of release eligibility",()=>{\n  const f=fixture();const payload=buildAttestationPayload({...f.expected,issuedAt});const signatureBase64=sign(null,Buffer.from(canonicalJson(payload)),generateKeyPairSync("ed25519").privateKey).toString("base64");\n  const blocked=evaluateSignedReleaseGate({evidence:{...f.expected,reviewerActor:"human-reviewer",approvalReference:"approval-58"},attestation:{algorithm:"Ed25519",keyId:"ci-key-1",payload,signatureBase64},trustedKeys:f.trustedKeys,now:new Date("2026-10-09T08:01:00.000Z")});expect(blocked.eligible).toBe(false);expect(blocked.blockers).toContain("ATTESTATION_SIGNATURE_INVALID");\n  const validPair=generateKeyPairSync("ed25519");const validSignature=sign(null,Buffer.from(canonicalJson(payload)),validPair.privateKey).toString("base64");\n  const valid=evaluateSignedReleaseGate({evidence:{...f.expected,reviewerActor:"human-reviewer",approvalReference:"approval-58"},attestation:{algorithm:"Ed25519",keyId:"ci-key-1",payload,signatureBase64:validSignature},trustedKeys:new Map([["ci-key-1",validPair.publicKey]]),now:new Date("2026-10-09T08:01:00.000Z")});expect(valid.eligible).toBe(true);\n });\n it("rejects malformed attestations and future-dated payloads",()=>{
   const f=fixture();expect(verifyReleaseAttestation({attestation:{},trustedKeys:f.trustedKeys,expected:f.expected}).blockers).toContain("ATTESTATION_INVALID_SHAPE");
   const future={...f.payload,issuedAt:"2026-10-10T08:00:00.000Z"};
   const att={algorithm:"Ed25519",keyId:"ci-key-1",payload:future,signatureBase64:sign(null,Buffer.from(canonicalJson(future)),generateKeyPairSync("ed25519").privateKey).toString("base64")};

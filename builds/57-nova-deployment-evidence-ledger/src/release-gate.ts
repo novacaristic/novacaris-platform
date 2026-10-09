@@ -69,7 +69,9 @@ export function evaluateReleaseGate(input: ReleaseEvidenceInput): ReleaseGateRes
   const reviewerActor = input.reviewerActor.trim();
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,63}$/.test(environment)) blockers.push("RELEASE_ENVIRONMENT_INVALID");
   if (!shaPattern.test(commitSha)) blockers.push("RELEASE_COMMIT_SHA_INVALID");
-  if (!/^https:\/\/(github\.com|gitlab\.com)\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/(actions\/runs|-/)[a-zA-Z0-9_./-]+$/.test(input.testRunUrl)) blockers.push("RELEASE_TEST_RUN_URL_INVALID");
+  let trustedTestRunUrl = false;
+  try { const url = new URL(input.testRunUrl); trustedTestRunUrl = url.protocol === "https:" && url.hostname === "github.com" && /^\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/actions\/runs\/\d+\/?$/.test(url.pathname) && !url.username && !url.password; } catch { trustedTestRunUrl = false; }
+  if (!trustedTestRunUrl) blockers.push("RELEASE_TEST_RUN_URL_INVALID");
   if (!reviewerActor || reviewerActor.length > 200) blockers.push("RELEASE_HUMAN_REVIEWER_REQUIRED");
   if (!input.approvalReference?.trim()) blockers.push("RELEASE_APPROVAL_REFERENCE_REQUIRED");
   const validated = validateSmokeReport(input.smokeReport);

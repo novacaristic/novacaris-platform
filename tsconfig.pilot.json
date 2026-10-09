@@ -27,6 +27,8 @@
     "builds/50-nova-reconciliation-recovery-control/src/reconciliation-control.ts",
     "builds/50-nova-reconciliation-recovery-control/tests/reconciliation-control.integration.test.ts",
     "builds/51-nova-governed-recovery-execution/src/governed-recovery-execution.ts",
-    "builds/51-nova-governed-recovery-execution/tests/governed-recovery-execution.integration.test.ts"
+    "builds/51-nova-governed-recovery-execution/tests/governed-recovery-execution.integration.test.ts",
+    "builds/52-nova-recovery-operator-console/src/recovery-operator-console.ts",
+    "builds/52-nova-recovery-operator-console/tests/recovery-operator-console.integration.test.ts"
   ]
 }

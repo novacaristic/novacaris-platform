@@ -1,0 +1,45 @@
+name: NOVA Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-validation:
+    name: Repository and artifact validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pinned revision
+        uses: actions/checkout@v4
+
+      - name: Validate repository build directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d builds
+          test -d builds/40-platform-integration-verification
+          test -d builds/41-deployment-environment-orchestration
+          test -d builds/42-ci-cd-automated-quality-gates
+          find builds -type f -size 0 -print -quit | grep -q . && {
+            echo "Empty build artifact found"
+            exit 1
+          } || true
+
+      - name: Check whitespace errors
+        run: git diff --check ${{ github.event.pull_request.base.sha || github.event.before }} ${{ github.sha }} || git diff --check
+
+      - name: Report revision
+        shell: bash
+        run: |
+          echo "Validated revision: ${GITHUB_SHA}"
+          echo "Event: ${GITHUB_EVENT_NAME}"
+          echo "This workflow validates repository structure; it does not claim application tests passed."

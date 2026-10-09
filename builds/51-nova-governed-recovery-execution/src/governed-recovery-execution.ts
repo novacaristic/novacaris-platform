@@ -84,6 +84,15 @@ export class GovernedRecoveryExecution {
           WHERE tenant_id = $1::uuid AND case_id = $2::uuid AND idempotency_key = $3 FOR UPDATE`,
         [context.tenantId, caseId, key],
       );
+      if (!prior.rows[0]) {
+        const otherActive = await client.query(
+          `SELECT id FROM nova_pilot_recovery_executions
+            WHERE tenant_id = $1::uuid AND case_id = $2::uuid AND status <> 'completed'
+            LIMIT 1 FOR UPDATE`,
+          [context.tenantId, caseId],
+        );
+        if (otherActive.rows[0]) throw new Error("RECOVERY_ALREADY_IN_PROGRESS");
+      }
       if (prior.rows[0]) {
         const existing = prior.rows[0];
         if (existing.status === "completed") {
@@ -129,24 +138,32 @@ export class GovernedRecoveryExecution {
       throw new Error("RECOVERY_OUTCOME_AMBIGUOUS_NO_BLIND_RETRY");
     }
 
-    const finished = await this.pool.query<RecoveryExecution>(
-      `UPDATE nova_pilot_recovery_executions
-          SET status = 'completed', downstream_reference = $3, evidence_reference = $4, completed_at = now()
-        WHERE tenant_id = $1::uuid AND id = $2::uuid AND status = 'executing'
-        RETURNING *`,
-      [context.tenantId, reserved.id, result.downstreamReference.trim(), result.evidenceReference.trim()],
-    );
-    if (!finished.rows[0]) {
+    const completionClient = await this.pool.connect();
+    let finished: RecoveryExecution | undefined;
+    try {
+      await completionClient.query("BEGIN");
+      const updated = await completionClient.query<RecoveryExecution>(
+        `UPDATE nova_pilot_recovery_executions
+            SET status = 'completed', downstream_reference = $3, evidence_reference = $4, completed_at = now()
+          WHERE tenant_id = $1::uuid AND id = $2::uuid AND status = 'executing'
+          RETURNING *`,
+        [context.tenantId, reserved.id, result.downstreamReference.trim(), result.evidenceReference.trim()],
+      );
+      finished = updated.rows[0];
+      if (!finished) throw new Error("RECOVERY_COMPLETION_STATE_RACE");
+      await completionClient.query(
+        `INSERT INTO nova_pilot_recovery_execution_audit
+          (tenant_id, execution_id, action, actor_reference, details)
+         VALUES ($1::uuid, $2::uuid, 'recovery_completed', $3, $4::jsonb)`,
+        [context.tenantId, reserved.id, context.actor.reference, JSON.stringify({ downstreamReference: result.downstreamReference, evidenceReference: result.evidenceReference })],
+      );
+      await completionClient.query("COMMIT");
+    } catch (error) {
+      try { await completionClient.query("ROLLBACK"); } catch { /* preserve original error */ }
       await this.markAmbiguous(context, reserved.id, "PERSIST_COMPLETION_FAILED");
       throw new Error("RECOVERY_OUTCOME_AMBIGUOUS_NO_BLIND_RETRY");
-    }
-    await this.pool.query(
-      `INSERT INTO nova_pilot_recovery_execution_audit
-        (tenant_id, execution_id, action, actor_reference, details)
-       VALUES ($1::uuid, $2::uuid, 'recovery_completed', $3, $4::jsonb)`,
-      [context.tenantId, reserved.id, context.actor.reference, JSON.stringify({ downstreamReference: result.downstreamReference, evidenceReference: result.evidenceReference })],
-    );
-    return finished.rows[0];
+    } finally { completionClient.release(); }
+    return finished;
   }
 
   private async markAmbiguous(context: RequestContext, executionId: string, failureCode: string): Promise<void> {

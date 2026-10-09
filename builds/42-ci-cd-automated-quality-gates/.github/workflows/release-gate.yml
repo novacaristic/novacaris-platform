@@ -1,0 +1,43 @@
+name: NOVA Protected Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full Git commit SHA to release
+        required: true
+        type: string
+      artifact_digest:
+        description: Immutable artifact digest (for example sha256:...)
+        required: true
+        type: string
+      change_reference:
+        description: Approved change/release record reference
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    environment: production-approval
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+      - name: Validate release inputs
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          CHANGE_REFERENCE: ${{ inputs.change_reference }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Provide a full 40-character commit SHA."; exit 1; }
+          [[ "$ARTIFACT_DIGEST" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || { echo "::error::Provide a SHA-256 artifact digest."; exit 1; }
+          [[ -n "$CHANGE_REFERENCE" ]] || { echo "::error::Change reference required."; exit 1; }
+          echo "Preflight passed. This workflow does not deploy; attach an approved deployment workflow only after staging verification."

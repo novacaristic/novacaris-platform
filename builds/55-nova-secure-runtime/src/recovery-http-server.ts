@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ApiRequest, ApiResponse } from "../../../builds/54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api";
 import { RecoveryOperationsApi } from "../../../builds/54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api";
+import type { DeploymentReadiness } from "../../../builds/56-nova-deployment-readiness/src/deployment-readiness";
 
 const MAX_BODY_BYTES = 64 * 1024;
 export interface RecoveryRuntimeOptions {
@@ -10,6 +11,7 @@ export interface RecoveryRuntimeOptions {
   uiPath?: string;
   allowedOrigin?: string;
   serviceName?: string;
+  readiness?: DeploymentReadiness;
 }
 function send(response: ServerResponse, status: number, body: unknown, contentType = "application/json; charset=utf-8"): void {
   response.statusCode = status;
@@ -52,6 +54,12 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
       const url = new URL(request.url ?? "/", `http://${host || "localhost"}`);
       if (method === "GET" && url.pathname === "/healthz") {
         send(response, 200, { service: serviceName, status: "healthy", checkedAt: new Date().toISOString() });
+        return;
+      }
+      if (method === "GET" && url.pathname === "/readyz") {
+        if (!options.readiness) { send(response, 503, { service: serviceName, status: "not_ready", reason: "READINESS_CHECK_NOT_CONFIGURED", checkedAt: new Date().toISOString() }); return; }
+        const result = await options.readiness.check();
+        send(response, result.status === "ready" ? 200 : 503, { service: serviceName, ...result });
         return;
       }
       if (method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {

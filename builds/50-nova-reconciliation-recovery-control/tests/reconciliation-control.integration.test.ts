@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { Pool } from "pg";
 import { ReconciliationControl } from "../src/reconciliation-control";
@@ -7,7 +8,7 @@ import type { RequestContext } from "../../../builds/44-shared-platform-foundati
 
 const databaseUrl = process.env.DATABASE_URL;
 const suite = databaseUrl ? describe : describe.skip;
-const tenantId = "00000000-0000-4000-8000-000000000050";
+const tenantId = randomUUID();
 const context: RequestContext = {
   contractVersion: "1.0", requestId: "build-50-request", correlationId: "build-50-correlation",
   tenantId, actor: { type: "user", reference: "human-reviewer-50" },
@@ -27,17 +28,9 @@ suite("Build 50 NOVA reconciliation control integration", () => {
       await client.query(reconciliationMigration);
       await client.query("SELECT pg_advisory_unlock(480046)");
     } finally { client.release(); }
-    await pool.query("DELETE FROM nova_pilot_reconciliation_audit WHERE tenant_id = $1::uuid", [tenantId]);
-    await pool.query("DELETE FROM nova_pilot_reconciliation_cases WHERE tenant_id = $1::uuid", [tenantId]);
-    await pool.query("DELETE FROM nova_pilot_outbox WHERE tenant_id = $1::uuid", [tenantId]);
-    await pool.query("DELETE FROM nova_pilot_operations WHERE tenant_id = $1::uuid", [tenantId]);
   });
 
   afterAll(async () => {
-    await pool.query("DELETE FROM nova_pilot_reconciliation_audit WHERE tenant_id = $1::uuid", [tenantId]);
-    await pool.query("DELETE FROM nova_pilot_reconciliation_cases WHERE tenant_id = $1::uuid", [tenantId]);
-    await pool.query("DELETE FROM nova_pilot_outbox WHERE tenant_id = $1::uuid", [tenantId]);
-    await pool.query("DELETE FROM nova_pilot_operations WHERE tenant_id = $1::uuid", [tenantId]);
     await pool.end();
   });
 

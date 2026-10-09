@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS nova_deployment_evidence_ledger (
   id BIGSERIAL PRIMARY KEY,
+  tenant_id UUID NOT NULL,
   environment TEXT NOT NULL CHECK (length(environment) BETWEEN 2 AND 64),
   commit_sha TEXT NOT NULL CHECK (commit_sha ~ '^[a-fA-F0-9]{40}([a-fA-F0-9]{24})?$'),
   smoke_run_id TEXT NOT NULL CHECK (length(smoke_run_id) BETWEEN 8 AND 80),
@@ -11,7 +12,7 @@ CREATE TABLE IF NOT EXISTS nova_deployment_evidence_ledger (
   reviewer_actor TEXT NOT NULL CHECK (length(reviewer_actor) BETWEEN 1 AND 200),
   approval_reference TEXT,
   recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (environment, commit_sha, smoke_run_id)
+  UNIQUE (tenant_id, environment, commit_sha, smoke_run_id)
 );
 CREATE TABLE IF NOT EXISTS nova_deployment_evidence_audit (
   id BIGSERIAL PRIMARY KEY,

@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "agent_id": "assign-at-registration",
+  "name": "quick-document-checker",
+  "version": "0.1.0",
+  "owner": "replace-with-team-or-owner",
+  "purpose": "Check a supplied document for completeness and return a checklist; do not submit or change records.",
+  "status": "draft",
+  "risk_tier": "tier_1_candidate",
+  "execution_mode": "dry_run",
+  "data_classification": ["public", "synthetic"],
+  "input_contract": {"format": "text", "max_characters": 20000, "required_fields": ["document_text"]},
+  "output_contract": {"format": "json", "required_fields": ["summary", "missing_items", "warnings", "needs_human_review"]},
+  "allowed_tools": [],
+  "allowed_actions": ["read_supplied_text", "produce_checklist"],
+  "denied_actions": ["send_message", "write_external_record", "sign_document", "change_permissions", "delete_data"],
+  "human_approval": {"required_for_tier_2": true, "approval_must_bind_to_action_hash": true},
+  "limits": {"timeout_seconds": 60, "max_tool_calls": 0, "max_retries": 1},
+  "audit": {"required": true, "fields": ["agent_id", "agent_version", "action_id", "idempotency_key", "actor_id", "tenant_id", "policy_version", "decision", "outcome", "timestamp"]},
+  "rollback": {"strategy": "not_applicable_no_external_side_effects", "tier_1_requires_verified_compensation": true},
+  "review": {"review_interval_days": 90, "last_reviewed": null}
+}

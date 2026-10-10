@@ -1,0 +1,13 @@
+{
+  "example": "synthetic-only",
+  "input": {
+    "document_text": "Sample Intake Form\nName: Example Person\nDate: [blank]\nContact: example@example.invalid\nConsent: [blank]"
+  },
+  "expected_output_shape": {
+    "summary": "Short summary of supplied text",
+    "missing_items": ["Date", "Consent"],
+    "warnings": ["Contains placeholder data; do not use for real decisions."],
+    "needs_human_review": true
+  },
+  "side_effects_expected": "none"
+}

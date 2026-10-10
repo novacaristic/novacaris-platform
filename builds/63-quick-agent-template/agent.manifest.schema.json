@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novacaris.example/schemas/agent-manifest-1.0.json",
+  "title": "NovaCarïs Quick Agent Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","agent_id","name","version","owner","purpose","status","risk_tier","execution_mode","data_classification","input_contract","output_contract","allowed_tools","allowed_actions","denied_actions","human_approval","limits","audit","rollback","review"],
+  "properties": {
+    "schema_version": {"const":"1.0"},
+    "agent_id": {"type":"string","minLength":1},
+    "name": {"type":"string","pattern":"^[a-z0-9][a-z0-9-]{1,62}$"},
+    "version": {"type":"string","pattern":"^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "owner": {"type":"string","minLength":1},
+    "purpose": {"type":"string","minLength":1},
+    "status": {"enum":["draft","staging","active","suspended","retired"]},
+    "risk_tier": {"enum":["tier_1_candidate","tier_2","deny_or_quarantine"]},
+    "execution_mode": {"enum":["dry_run","staging","production"]},
+    "data_classification": {"type":"array","items":{"enum":["public","synthetic","internal","confidential","regulated"]},"minItems":1,"uniqueItems":true},
+    "input_contract": {"type":"object","required":["format","max_characters","required_fields"],"properties":{"format":{"type":"string"},"max_characters":{"type":"integer","minimum":1},"required_fields":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},
+    "output_contract": {"type":"object","required":["format","required_fields"],"properties":{"format":{"type":"string"},"required_fields":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},
+    "allowed_tools": {"type":"array","items":{"type":"string"},"uniqueItems":true},
+    "allowed_actions": {"type":"array","items":{"type":"string"},"uniqueItems":true},
+    "denied_actions": {"type":"array","items":{"type":"string"},"uniqueItems":true},
+    "human_approval": {"type":"object","required":["required_for_tier_2","approval_must_bind_to_action_hash"],"properties":{"required_for_tier_2":{"const":true},"approval_must_bind_to_action_hash":{"const":true}},"additionalProperties":false},
+    "limits": {"type":"object","required":["timeout_seconds","max_tool_calls","max_retries"],"properties":{"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600},"max_tool_calls":{"type":"integer","minimum":0,"maximum":100},"max_retries":{"type":"integer","minimum":0,"maximum":5}},"additionalProperties":false},
+    "audit": {"type":"object","required":["required","fields"],"properties":{"required":{"const":true},"fields":{"type":"array","items":{"type":"string"},"minItems":1,"uniqueItems":true}},"additionalProperties":false},
+    "rollback": {"type":"object","required":["strategy","tier_1_requires_verified_compensation"],"properties":{"strategy":{"type":"string"},"tier_1_requires_verified_compensation":{"const":true}},"additionalProperties":false},
+    "review": {"type":"object","required":["review_interval_days","last_reviewed"],"properties":{"review_interval_days":{"type":"integer","minimum":1,"maximum":365},"last_reviewed":{"type":["string","null"],"format":"date"}},"additionalProperties":false}
+  }
+}

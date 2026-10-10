@@ -7,24 +7,37 @@ An agent is a helper with one job. One helper checks forms. Another summarizes a
 - Manifest: the helper's ID card and rule sheet.
 - Prompt: the instructions for its job.
 - Schema: a rule checker for the manifest's shape.
-- Example: a safe practice job.
+- Launcher: a PowerShell script that creates a fresh agent folder.
 - This manual: setup instructions.
 
 The template does not magically install a model, connect tools, or secure a server. Your NovaCarïs runtime must already provide those parts.
 
-## Make a simple helper
-1. Copy the builds/63-quick-agent-template folder and rename the copy.
-2. Open agent.manifest.json in a text editor.
-3. Set a clear name, owner, version, and one-sentence job.
-4. List only the information it needs. Start with public or made-up practice data.
-5. Keep allowed_tools empty unless an administrator has approved and configured a tool.
-6. Edit prompt.template.md to explain the job, allowed output, and things the helper must never do.
-7. Keep execution_mode set to dry_run first. That means “practice only; don't change real systems.”
-8. Ask an administrator or developer to validate the manifest and register the agent in the platform.
-9. Test good input, bad input, missing information, duplicate requests, and tool failure.
-10. Review the output. Only an authorized administrator may move it to staging or request production approval.
+## Create a quick agent on Windows
+1. Download or clone the NovaCarïs repository to your computer.
+2. Open PowerShell in the repository folder.
+3. Create a folder to hold your new agents:
 
-## Safety levels
+   ```powershell
+   New-Item -ItemType Directory -Force .\\local-agents | Out-Null
+   ```
+
+4. Run the launcher, replacing the example job details with your own:
+
+   ```powershell
+   .\\builds\\63-quick-agent-template\\scripts\\New-NovaQuickAgent.ps1 `
+     -Name 'intake-form-checker' `
+     -Purpose 'Check a made-up intake form for missing fields.' `
+     -Owner 'Operations Team' `
+     -OutputRoot .\\local-agents
+   ```
+
+5. Open the new folder under local-agents and review agent.manifest.json and prompt.template.md.
+6. Leave execution_mode set to dry_run. This means “practice only; do not change real systems.”
+7. Test with public or made-up data only.
+8. Ask an administrator to review and register the agent in the NovaCarïs host platform.
+9. Do not enable real tools or production execution until the security checks pass.
+
+## What are the safety levels?
 - Tier 1: a small, approved task that is low-risk and has a tested recovery plan.
 - Tier 2: an important action. A real, authorized human must approve the exact action.
 - Deny/quarantine: the helper must stop because the action is forbidden, unclear, or untrusted.

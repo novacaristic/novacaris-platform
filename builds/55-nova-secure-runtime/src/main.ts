@@ -40,7 +40,13 @@ async function main(): Promise<void> {
   const escalations = new RecoveryEscalations(pool, (context, action) => authorize(context, action));
   const api = new RecoveryOperationsApi(security.resolveContext as AuthenticatedContextResolver, operators, escalations);
   const readiness = { check: () => checkDatabaseReadiness(async () => { await pool.query("SELECT 1"); }) };
-  let workspaceApi: WorkspaceApi | undefined;\n  if (typeof security.resolveWorkspaceContext === "function") {\n    const workspaceStore = new PostgresWorkspaceStore(pool);\n    const workspace = new ClientCaseWorkspace(workspaceStore, (context, action) => authorize(context as unknown as RequestContext, action));\n    workspaceApi = new WorkspaceApi(security.resolveWorkspaceContext, workspace, (tenantId, noteId) => workspaceStore.listAudit(tenantId, noteId));\n  }\n  const server = createRecoveryHttpServer({ api, workspaceApi, readiness, allowedOrigin });
+  let workspaceApi: WorkspaceApi | undefined;
+  if (typeof security.resolveWorkspaceContext === "function") {
+    const workspaceStore = new PostgresWorkspaceStore(pool);
+    const workspace = new ClientCaseWorkspace(workspaceStore, (context, action) => authorize(context as unknown as RequestContext, action));
+    workspaceApi = new WorkspaceApi(security.resolveWorkspaceContext, workspace, (tenantId, noteId) => workspaceStore.listAudit(tenantId, noteId));
+  }
+  const server = createRecoveryHttpServer({ api, workspaceApi, readiness, allowedOrigin });
   server.listen(port, process.env.HOST ?? "0.0.0.0", () => process.stdout.write(`nova_recovery_runtime_listening port=${port}\n`));
   const shutdown = (signal: string) => {
     process.stdout.write(`nova_recovery_runtime_shutdown signal=${signal}\n`);

@@ -107,7 +107,9 @@ export async function resolveWorkspaceContext(request) {
   if (!context) return null;
   const identity = decisionByContext.get(context);
   if (!identity) return null;
-  const workspaceContext = { tenantId:context.tenantId, actor:{type:"user",reference:context.actor.reference,role:identity.role}, authorizationDecisionReference:context.authorizationDecisionReference };\n  decisionByContext.set(workspaceContext, identity);\n  return workspaceContext;
+  const workspaceContext = { tenantId:context.tenantId, actor:{type:"user",reference:context.actor.reference,role:identity.role}, authorizationDecisionReference:context.authorizationDecisionReference };
+  decisionByContext.set(workspaceContext, identity);
+  return workspaceContext;
 }
 export async function authorize(context, action) {
   const identity = context && decisionByContext.get(context);

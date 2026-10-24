@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS nova_agents.agent_profiles (
  PRIMARY KEY (tenant_id,agent_id), UNIQUE (tenant_id,normalized_name),
  CHECK (approved_by IS NULL OR approved_by <> requested_by OR lifecycle <> 'APPROVED')
 );
+ALTER TABLE nova_agents.agent_profiles ADD COLUMN IF NOT EXISTS requires_human_approval boolean NOT NULL DEFAULT true;
 CREATE INDEX IF NOT EXISTS agent_profiles_lifecycle_idx ON nova_agents.agent_profiles(tenant_id,lifecycle);
 CREATE TABLE IF NOT EXISTS nova_agents.agent_permissions (
  tenant_id text NOT NULL, permission_id text NOT NULL, agent_id text NOT NULL, resource text NOT NULL,

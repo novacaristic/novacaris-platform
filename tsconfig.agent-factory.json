@@ -17,6 +17,7 @@
     "builds/65-nova-agent-factory/src/permission-policy.ts",
     "builds/65-nova-agent-factory/tests/agent-factory.test.ts",
     "builds/65-nova-agent-factory/src/agent-factory-api.ts",
-    "builds/65-nova-agent-factory/src/postgres-agent-factory-store.ts"
+    "builds/65-nova-agent-factory/src/postgres-agent-factory-store.ts",
+    "builds/65-nova-agent-factory/src/agent-runtime.ts"
   ]
 }

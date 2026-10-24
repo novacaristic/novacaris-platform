@@ -138,6 +138,7 @@ export class PostgresAgentRuntime {
    if(controller.signal.aborted)throw new Error("TASK_TIMEOUT");
    const latest=await this.factory.getAgent(task!.tenant_id,task!.agent_id);
    if(!latest||latest.lifecycle!=="ACTIVE")throw new Error("AGENT_NOT_ACTIVE");
+   if(requiredCapability!==task!.task_type)throw new Error("TASK_CAPABILITY_MISMATCH");
    if(!CAPABILITIES.has(requiredCapability)||!latest.profile.capabilities.includes(requiredCapability))throw new Error("CAPABILITY_NOT_IN_AGENT_PROFILE");
    if(HUMAN_APPROVAL_CAPABILITIES.has(requiredCapability)&&(!task!.approved_by||task!.approved_by===task!.created_by))throw new Error("HUMAN_APPROVAL_REQUIRED");
    const gate=await this.authorize(task!.tenant_id,latest,requiredCapability);

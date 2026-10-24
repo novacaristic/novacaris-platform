@@ -34,6 +34,8 @@ export interface AgentFactoryStore {
   get(tenantId: string, agentId: string): Promise<AgentRecord | undefined>;
   replace(record: AgentRecord, expectedVersion: number): Promise<void>;
   appendEvent(event: FactoryEvent): Promise<void>;
+  insertWithEvent?(record: AgentRecord, event: FactoryEvent): Promise<void>;
+  replaceWithEvent?(record: AgentRecord, expectedVersion: number, event: FactoryEvent): Promise<void>;
 }
 const riskRank: Record<AgentRisk, number> = { LOW: 0, MODERATE: 1, HIGH: 2, CRITICAL: 3 };
 const actionRank: Record<AgentAction, number> = { READ: 0, RECOMMEND: 1, PREPARE: 2, EXECUTE_WITH_APPROVAL: 3, AUTONOMOUS: 4 };
@@ -76,12 +78,13 @@ export class AgentFactory {
       lifecycle: "SPECIFIED", requestedBy: command.requesterId,
       createdAt: now.toISOString(), updatedAt: now.toISOString(), version: 1
     };
-    await this.store.insert(record);
-    await this.store.appendEvent({
+    const creationEvent: FactoryEvent = {
       id: newId("event"), tenantId: command.tenantId, actorId: command.requesterId, agentId: record.id,
       event: "AGENT_CREATION_REQUESTED", occurredAt: now.toISOString(),
       details: { requestId: command.requestId, domain: command.domain, approvalRequired: String(approval) }
-    });
+    };
+    if (this.store.insertWithEvent) await this.store.insertWithEvent(record, creationEvent);
+    else { await this.store.insert(record); await this.store.appendEvent(creationEvent); }
     return record;
   }
   async transition(tenantId: string, agentId: string, next: AgentLifecycle, actorId: string, reason: string, now = new Date()): Promise<AgentRecord> {
@@ -99,11 +102,12 @@ export class AgentFactory {
       if (current.lifecycle !== "ACTIVE" && await this.store.countActive(tenantId) >= this.policy.maxActiveAgentsPerTenant) throw new Error("TENANT_AGENT_LIMIT_REACHED");
     }
     const updated: AgentRecord = { ...current, lifecycle: next, approvedBy: next === "APPROVED" ? actorId : current.approvedBy, updatedAt: now.toISOString(), version: current.version + 1 };
-    await this.store.replace(updated, current.version);
-    await this.store.appendEvent({
+    const transitionEvent: FactoryEvent = {
       id: newId("event"), tenantId, actorId, agentId, event: "AGENT_" + next, occurredAt: now.toISOString(),
       details: { previous: current.lifecycle, next, reason }
-    });
+    };
+    if (this.store.replaceWithEvent) await this.store.replaceWithEvent(updated, current.version, transitionEvent);
+    else { await this.store.replace(updated, current.version); await this.store.appendEvent(transitionEvent); }
     return updated;
   }
 }

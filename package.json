@@ -11,7 +11,7 @@
     "check:pilot": "npm run typecheck:pilot && npm run test:pilot",
     "start:runtime": "tsx builds/55-nova-secure-runtime/src/main.ts",
     "typecheck:agent-factory": "tsc --noEmit -p tsconfig.agent-factory.json",
-    "test:agent-factory": "vitest run --fileParallelism=false builds/65-nova-agent-factory/tests/agent-factory.test.ts",
+    "test:agent-factory": "vitest run --fileParallelism=false builds/65-nova-agent-factory/tests/agent-factory.test.ts builds/65-nova-agent-factory/tests/agent-runtime.test.ts",
     "check:agent-factory": "npm run typecheck:agent-factory && npm run test:agent-factory"
   },
   "devDependencies": {

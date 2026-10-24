@@ -11,7 +11,7 @@ const risks=new Set<AgentRisk>(["LOW","MODERATE","HIGH","CRITICAL"]);
 const actions=new Set<AgentAction>(["READ","RECOMMEND","PREPARE","EXECUTE_WITH_APPROVAL","AUTONOMOUS"]);
 function object(v:unknown):Record<string,unknown>{if(!v||typeof v!=="object"||Array.isArray(v))throw new Error("REQUEST_BODY_INVALID");return v as Record<string,unknown>;}
 function text(v:unknown,field:string,max=2000):string{if(typeof v!=="string"||!v.trim()||v.length>max)throw new Error("FIELD_INVALID:"+field);return v.trim();}
-function error(e:unknown):AgentApiResponse{const code=e instanceof Error?e.message:"INTERNAL_ERROR";const status=/FORBIDDEN|DENIED|SELF_APPROVAL|HUMAN_APPROVAL/.test(code)?403:/NOT_FOUND/.test(code)?404:/ALREADY_EXISTS|CONFLICT|TRANSITION/.test(code)?409:/INVALID|REQUIRED|CAPABILITY/.test(code)?400:500;return{status,body:{error:code}};}
+function error(e:unknown):AgentApiResponse{const code=e instanceof Error?e.message:"INTERNAL_ERROR";const status=/FORBIDDEN|DENIED|SELF_APPROVAL|HUMAN_APPROVAL/.test(code)?403:/NOT_FOUND/.test(code)?404:/ALREADY_EXISTS|CONFLICT|TRANSITION|LIMIT_REACHED|VERSION/.test(code)?409:/INVALID|REQUIRED|CAPABILITY/.test(code)?400:500;return{status,body:{error:code}};}
 export class AgentFactoryApi {
  constructor(private readonly resolveContext:ContextResolver,private readonly authorize:Authorizer,private readonly factory:AgentFactory){}
  async handle(req:AgentApiRequest):Promise<AgentApiResponse>{

@@ -99,7 +99,7 @@ export class AgentFactory {
     if (next === "ACTIVE") {
       if (current.lifecycle !== "REGISTERED" && current.lifecycle !== "SUSPENDED") throw new Error("AGENT_MUST_BE_REGISTERED");
       if (current.profile.requiresHumanApprovalForActivation && !current.approvedBy) throw new Error("HUMAN_APPROVAL_REQUIRED");
-      if (current.lifecycle !== "ACTIVE" && await this.store.countActive(tenantId) >= this.policy.maxActiveAgentsPerTenant) throw new Error("TENANT_AGENT_LIMIT_REACHED");
+      if (await this.store.countActive(tenantId) >= this.policy.maxActiveAgentsPerTenant) throw new Error("TENANT_AGENT_LIMIT_REACHED");
     }
     const updated: AgentRecord = { ...current, lifecycle: next, approvedBy: next === "APPROVED" ? actorId : current.approvedBy, updatedAt: now.toISOString(), version: current.version + 1 };
     const transitionEvent: FactoryEvent = {

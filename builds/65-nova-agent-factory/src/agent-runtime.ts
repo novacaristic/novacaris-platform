@@ -96,6 +96,21 @@ export class PostgresAgentRuntime {
    await client.query("COMMIT");return{taskId:input.taskId,status:taskStatus};
   }catch(e){try{await client.query("ROLLBACK")}catch{}throw e;}finally{client.release();}
  }
+ async approveTask(input:{tenantId:string;taskId:string;actorId:string}):Promise<void>{
+  const c=await this.pool.connect();
+  try{
+   await c.query("BEGIN");
+   const found=await c.query<{created_by:string;status:string;error_code:string|null}>(`SELECT created_by,status,error_code FROM nova_agents.tasks WHERE tenant_id=$1 AND task_id=$2 FOR UPDATE`,[input.tenantId,input.taskId]);
+   const task=found.rows[0];if(!task)throw new Error("TASK_NOT_FOUND");
+   if(task.created_by===input.actorId)throw new Error("TASK_SELF_APPROVAL_DENIED");
+   if(task.status!=="WAITING_APPROVAL"||task.error_code!=="HUMAN_APPROVAL_REQUIRED")throw new Error("TASK_NOT_AWAITING_APPROVAL");
+   await c.query(`UPDATE nova_agents.tasks SET status='QUEUED',approved_by=$3,error_code=NULL,finished_at=NULL WHERE tenant_id=$1 AND task_id=$2`,[input.tenantId,input.taskId,input.actorId]);
+   await c.query(`INSERT INTO nova_agents.audit_events(tenant_id,event_id,actor_id,agent_id,event_type,details)
+    SELECT tenant_id,$3,$4,agent_id,'AGENT_TASK_APPROVED',$5::jsonb FROM nova_agents.tasks WHERE tenant_id=$1 AND task_id=$2`,
+    [input.tenantId,input.taskId,id("event"),input.actorId,JSON.stringify({taskId:input.taskId})]);
+   await c.query("COMMIT");
+  }catch(e){try{await c.query("ROLLBACK")}catch{}throw e;}finally{c.release();}
+ }
  async getTask(tenantId:string,taskId:string):Promise<Record<string,unknown>|undefined>{
   const r=await this.pool.query<Record<string,unknown>>(`SELECT task_id,agent_id,task_type,status,result,error_code,created_at,started_at,finished_at FROM nova_agents.tasks WHERE tenant_id=$1 AND task_id=$2`,[tenantId,taskId]);
   return r.rows[0];
@@ -176,6 +191,12 @@ export class AgentRuntimeApi {
     const input=obj(b.input);const key=str(req.headers?.["idempotency-key"]??b.idempotencyKey,"idempotencyKey",200);
     const task=await this.runtime.enqueue({tenantId:context.tenantId,agentId,taskId:id("task"),createdBy:context.actor.reference,capability,input,idempotencyKey:key});
     return{status:202,body:task};
+   }
+   const approvalMatch=path.match(/^\/api\/tasks\/([^/]+)\/approve$/);
+   if(req.method==="POST"&&approvalMatch){
+    if(!await this.authorizeAction(context,"agent.task.approve"))return{status:403,body:{error:"TASK_APPROVAL_FORBIDDEN"}};
+    await this.runtime.approveTask({tenantId:context.tenantId,taskId:decodeURIComponent(approvalMatch[1]),actorId:context.actor.reference});
+    return{status:200,body:{approved:true,status:"QUEUED"}};
    }
    const taskMatch=path.match(/^\/api\/tasks\/([^/]+)$/);
    if(req.method==="GET"&&taskMatch){

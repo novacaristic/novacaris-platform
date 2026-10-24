@@ -61,7 +61,7 @@ export class AgentFactory {
     requireText(command.purpose, "purpose");
     if (!command.requestedCapabilities.length) throw new Error("AGENT_CAPABILITIES_REQUIRED");
     if (command.requestedCapabilities.some(c => !this.policy.allowedCapabilities.includes(c))) throw new Error("CAPABILITY_NOT_ALLOWED");
-    if (actionRank[command.requestedActionCeiling] > actionRank.PREPARE && !this.policy.allowAutonomousAgentCreation) throw new Error("AUTONOMOUS_CREATION_POLICY_DENIED");
+    if (command.requestedActionCeiling === "AUTONOMOUS" && !this.policy.allowAutonomousAgentCreation) throw new Error("AUTONOMOUS_CREATION_POLICY_DENIED");
     if (await this.store.findByName(command.tenantId, normalize(command.requestedName))) throw new Error("AGENT_NAME_ALREADY_EXISTS");
     if (await this.store.countActive(command.tenantId) >= this.policy.maxActiveAgentsPerTenant) throw new Error("TENANT_AGENT_LIMIT_REACHED");
     const approval = this.policy.requireApprovalForActivation ||

@@ -73,7 +73,7 @@ export class AgentFactory {
     };
     const record: AgentRecord = {
       id: newId("agent"), tenantId: command.tenantId, profile,
-      lifecycle: approval ? "APPROVAL_REQUIRED" : "SPECIFIED", requestedBy: command.requesterId,
+      lifecycle: "SPECIFIED", requestedBy: command.requesterId,
       createdAt: now.toISOString(), updatedAt: now.toISOString(), version: 1
     };
     await this.store.insert(record);

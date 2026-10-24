@@ -3,16 +3,16 @@ import type { AgentFactoryStore, AgentRecord, FactoryEvent, AgentLifecycle, Agen
 
 type Row = {
  tenant_id:string; agent_id:string; profile_id:string; name:string; purpose:string; domain:AgentDomain;
- risk:AgentRisk; capabilities:AgentCapability[]|string; action_ceiling:AgentAction; lifecycle:AgentLifecycle;
+ risk:AgentRisk; capabilities:AgentCapability[]|string; action_ceiling:AgentAction; requires_human_approval:boolean; lifecycle:AgentLifecycle;
  requested_by:string; approved_by:string|null; version:number; created_at:Date|string; updated_at:Date|string;
 };
 const iso=(v:Date|string)=>v instanceof Date?v.toISOString():new Date(v).toISOString();
 const normalize=(s:string)=>s.normalize("NFKC").trim().toLocaleLowerCase("en-US").replace(/\s+/g," ");
 function mapRow(r:Row):AgentRecord {
  const capabilities=typeof r.capabilities==="string"?JSON.parse(r.capabilities):r.capabilities;
- return {id:r.agent_id,tenantId:r.tenant_id,profile:{id:r.profile_id,name:r.name,purpose:r.purpose,domain:r.domain,risk:r.risk,capabilities,defaultActionCeiling:r.action_ceiling,requiresHumanApprovalForActivation:true,description:"Persisted NOVA specialist agent."},lifecycle:r.lifecycle,requestedBy:r.requested_by,...(r.approved_by?{approvedBy:r.approved_by}:{}),version:Number(r.version),createdAt:iso(r.created_at),updatedAt:iso(r.updated_at)};
+ return {id:r.agent_id,tenantId:r.tenant_id,profile:{id:r.profile_id,name:r.name,purpose:r.purpose,domain:r.domain,risk:r.risk,capabilities,defaultActionCeiling:r.action_ceiling,requiresHumanApprovalForActivation:r.requires_human_approval,description:"Persisted NOVA specialist agent."},lifecycle:r.lifecycle,requestedBy:r.requested_by,...(r.approved_by?{approvedBy:r.approved_by}:{}),version:Number(r.version),createdAt:iso(r.created_at),updatedAt:iso(r.updated_at)};
 }
-const SELECT=`SELECT tenant_id,agent_id,profile_id,name,purpose,domain,risk,capabilities,action_ceiling,lifecycle,requested_by,approved_by,version,created_at,updated_at FROM nova_agents.agent_profiles`;
+const SELECT=`SELECT tenant_id,agent_id,profile_id,name,purpose,domain,risk,capabilities,action_ceiling,requires_human_approval,lifecycle,requested_by,approved_by,version,created_at,updated_at FROM nova_agents.agent_profiles`;
 interface DbClient {query<T=Record<string,unknown>>(sql:string,values?:unknown[]):Promise<{rows:T[];rowCount:number|null}>;release():void;}
 interface DbPool {query<T=Record<string,unknown>>(sql:string,values?:unknown[]):Promise<{rows:T[];rowCount:number|null}>;connect():Promise<DbClient>;}
 export class PostgresAgentFactoryStore implements AgentFactoryStore {
@@ -24,7 +24,7 @@ export class PostgresAgentFactoryStore implements AgentFactoryStore {
   try{await c.query("BEGIN");
    await c.query(`INSERT INTO nova_agents.agent_profiles (tenant_id,agent_id,profile_id,name,normalized_name,purpose,domain,risk,capabilities,action_ceiling,lifecycle,requested_by,approved_by,version,created_at,updated_at)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15::timestamptz,$16::timestamptz)`,
-    [record.tenantId,record.id,record.profile.id,record.profile.name,normalize(record.profile.name),record.profile.purpose,record.profile.domain,record.profile.risk,JSON.stringify(record.profile.capabilities),record.profile.defaultActionCeiling,record.lifecycle,record.requestedBy,record.approvedBy??null,record.version,record.createdAt,record.updatedAt]);
+    [record.tenantId,record.id,record.profile.id,record.profile.name,normalize(record.profile.name),record.profile.purpose,record.profile.domain,record.profile.risk,JSON.stringify(record.profile.capabilities),record.profile.defaultActionCeiling,record.profile.requiresHumanApprovalForActivation,record.lifecycle,record.requestedBy,record.approvedBy??null,record.version,record.createdAt,record.updatedAt]);
    await c.query("COMMIT");
   }catch(e){try{await c.query("ROLLBACK")}catch{}throw e}finally{c.release()}
  }

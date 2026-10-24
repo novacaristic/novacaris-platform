@@ -10,6 +10,9 @@ import { checkDatabaseReadiness, validateRuntimeConfiguration } from "../../../b
 import { ClientCaseWorkspace, type WorkspaceContext } from "../../../builds/61-nova-client-case-workspace/src/client-case-workspace";
 import { PostgresWorkspaceStore } from "../../../builds/62-nova-durable-workspace/src/postgres-workspace-store";
 import { WorkspaceApi } from "../../../builds/62-nova-durable-workspace/src/workspace-api";
+import { AgentFactory, defaultFactoryPolicy } from "../../../builds/65-nova-agent-factory/src/agent-factory";
+import { AgentFactoryApi, type AgentApiRequest } from "../../../builds/65-nova-agent-factory/src/agent-factory-api";
+import { PostgresAgentFactoryStore } from "../../../builds/65-nova-agent-factory/src/postgres-agent-factory-store";
 
 interface HostSecurityAdapter {
   resolveContext: AuthenticatedContextResolver;
@@ -46,7 +49,20 @@ async function main(): Promise<void> {
     const workspace = new ClientCaseWorkspace(workspaceStore, (context, action) => authorize(context as unknown as RequestContext, action));
     workspaceApi = new WorkspaceApi(security.resolveWorkspaceContext, workspace, (tenantId, noteId) => workspaceStore.listAudit(tenantId, noteId));
   }
-  const server = createRecoveryHttpServer({ api, workspaceApi, readiness, allowedOrigin });
+  let agentApi: AgentFactoryApi | undefined;
+  if (process.env.NOVA_AGENT_FACTORY_ENABLED === "true") {
+    const schema = await pool.query<{ready:boolean}>(
+      "SELECT to_regclass('nova_agents.agent_profiles') IS NOT NULL AS ready"
+    );
+    if (!schema.rows[0]?.ready) throw new Error("STARTUP_BLOCKED_AGENT_FACTORY_MIGRATION_REQUIRED");
+    const factory = new AgentFactory(new PostgresAgentFactoryStore(pool), defaultFactoryPolicy);
+    agentApi = new AgentFactoryApi(
+      request => (security.resolveContext as (request: AgentApiRequest) => Promise<RequestContext | null>)(request),
+      (context, action) => authorize(context, action),
+      factory,
+    );
+  }
+  const server = createRecoveryHttpServer({ api, workspaceApi, agentApi, readiness, allowedOrigin });
   server.listen(port, process.env.HOST ?? "0.0.0.0", () => process.stdout.write(`nova_recovery_runtime_listening port=${port}\n`));
   const shutdown = (signal: string) => {
     process.stdout.write(`nova_recovery_runtime_shutdown signal=${signal}\n`);

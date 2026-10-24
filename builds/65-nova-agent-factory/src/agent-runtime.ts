@@ -79,8 +79,15 @@ export class PostgresAgentRuntime {
    if(!agent.profile.capabilities.includes(input.capability))throw new Error("CAPABILITY_NOT_IN_AGENT_PROFILE");
    const grant=await this.authorize(input.tenantId,agent,input.capability);
    if(!grant.allowed)throw new Error(grant.reason);
-   await client.query(`INSERT INTO nova_agents.tasks(tenant_id,task_id,agent_id,created_by,task_type,input,status,idempotency_key)
-    VALUES($1,$2,$3,$4,$5,$6::jsonb,'QUEUED',$7)`,[input.tenantId,input.taskId,input.agentId,input.createdBy,input.capability,JSON.stringify(input.input),input.idempotencyKey]);
+   const inserted=await client.query<{task_id:string;status:string}>(`INSERT INTO nova_agents.tasks(tenant_id,task_id,agent_id,created_by,task_type,input,status,idempotency_key)
+    VALUES($1,$2,$3,$4,$5,$6::jsonb,'QUEUED',$7)
+    ON CONFLICT (tenant_id,idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+    RETURNING task_id,status`,[input.tenantId,input.taskId,input.agentId,input.createdBy,input.capability,JSON.stringify(input.input),input.idempotencyKey]);
+   if(!inserted.rows[0]){
+    const duplicate=await client.query<{task_id:string;status:string}>(`SELECT task_id,status FROM nova_agents.tasks WHERE tenant_id=$1 AND idempotency_key=$2`,[input.tenantId,input.idempotencyKey]);
+    if(!duplicate.rows[0])throw new Error("TASK_IDEMPOTENCY_CONFLICT");
+    await client.query("COMMIT");return{taskId:duplicate.rows[0].task_id,status:duplicate.rows[0].status};
+   }
    await client.query(`INSERT INTO nova_agents.audit_events(tenant_id,event_id,actor_id,agent_id,event_type,details)
     VALUES($1,$2,$3,$4,'AGENT_TASK_QUEUED',$5::jsonb)`,[input.tenantId,id("event"),input.createdBy,input.agentId,JSON.stringify({taskId:input.taskId,capability:input.capability})]);
    await client.query("COMMIT");return{taskId:input.taskId,status:"QUEUED"};

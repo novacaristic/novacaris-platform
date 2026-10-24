@@ -12,7 +12,10 @@
     "start:runtime": "tsx builds/55-nova-secure-runtime/src/main.ts",
     "typecheck:agent-factory": "tsc --noEmit -p tsconfig.agent-factory.json",
     "test:agent-factory": "vitest run --fileParallelism=false builds/65-nova-agent-factory/tests/agent-factory.test.ts",
-    "check:agent-factory": "npm run typecheck:agent-factory && npm run test:agent-factory"
+    "check:agent-factory": "npm run typecheck:agent-factory && npm run test:agent-factory",
+    "typecheck:agent-task-dispatcher": "tsc --noEmit -p tsconfig.agent-task-dispatcher.json",
+    "test:agent-task-dispatcher": "vitest run --fileParallelism=false builds/66-nova-agent-task-dispatcher/tests/agent-task-dispatcher.test.ts",
+    "check:agent-task-dispatcher": "npm run typecheck:agent-task-dispatcher && npm run test:agent-task-dispatcher"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

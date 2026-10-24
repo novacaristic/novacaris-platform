@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentCapability, AgentFactoryStore, AgentRecord } from "../../65-nova-agent-factory/src/agent-factory.js";
 
 export type AgentTaskStatus = "QUEUED" | "RUNNING" | "WAITING_APPROVAL" | "SUCCEEDED" | "FAILED" | "CANCELLED";
@@ -40,16 +41,19 @@ export interface SubmitTaskInput {
 export interface AgentTaskPolicy {
   authorize(principal: TaskPrincipal, agent: AgentRecord, capability: AgentCapability): Promise<TaskPermissionDecision>;
 }
-const safeJson = (value: unknown): string => JSON.stringify(value, Object.keys((value && typeof value === "object" && !Array.isArray(value)) ? value as object : {}).sort());
 function requireString(value: string, code: string, max = 200): void {
   if (typeof value !== "string" || !value.trim() || value.length > max) throw new Error(code);
 }
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a],[b]) => a.localeCompare(b)).map(([key, item]) => [key, canonicalize(item)]));
+  }
+  return value;
+}
 function fingerprint(input: SubmitTaskInput): string {
-  // Stable enough for request identity; production deployments should replace with a cryptographic hash.
-  const canonical = JSON.stringify({ taskType: input.taskType, capability: input.capability, input: input.input });
-  let hash = 2166136261;
-  for (let i = 0; i < canonical.length; i++) { hash ^= canonical.charCodeAt(i); hash = Math.imul(hash, 16777619); }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  const canonical = JSON.stringify(canonicalize({ taskType: input.taskType, capability: input.capability, input: input.input }));
+  return createHash("sha256").update(canonical).digest("hex");
 }
 const newId = () => "task_" + crypto.randomUUID();
 

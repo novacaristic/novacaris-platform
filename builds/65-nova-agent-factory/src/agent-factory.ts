@@ -32,6 +32,7 @@ export interface AgentFactoryStore {
   countActive(tenantId: string): Promise<number>;
   insert(record: AgentRecord): Promise<void>;
   get(tenantId: string, agentId: string): Promise<AgentRecord | undefined>;
+  list?(tenantId: string): Promise<AgentRecord[]>;
   replace(record: AgentRecord, expectedVersion: number): Promise<void>;
   appendEvent(event: FactoryEvent): Promise<void>;
   insertWithEvent?(record: AgentRecord, event: FactoryEvent): Promise<void>;
@@ -87,6 +88,9 @@ export class AgentFactory {
     else { await this.store.insert(record); await this.store.appendEvent(creationEvent); }
     return record;
   }
+  async getAgent(tenantId: string, agentId: string): Promise<AgentRecord | undefined> { return this.store.get(tenantId, agentId); }
+  async listAgents(tenantId: string): Promise<AgentRecord[]> { if (!this.store.list) throw new Error("AGENT_LIST_NOT_IMPLEMENTED"); return this.store.list(tenantId); }
+
   async transition(tenantId: string, agentId: string, next: AgentLifecycle, actorId: string, reason: string, now = new Date()): Promise<AgentRecord> {
     requireText(actorId, "actor_id", 200); requireText(reason, "reason", 1000);
     const current = await this.store.get(tenantId, agentId);

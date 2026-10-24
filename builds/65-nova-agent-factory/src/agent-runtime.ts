@@ -11,7 +11,8 @@ interface Pool { query<T=Record<string,unknown>>(sql:string,values?:unknown[]):P
 type Resolver=(request:RuntimeRequest)=>Promise<RequestContext|null>;
 type Authorizer=(context:RequestContext,action:string)=>Promise<boolean>;
 export interface AgentTaskInput { tenantId:string; agentId:string; taskId:string; createdBy:string; capability:AgentCapability; input:Record<string,unknown>; idempotencyKey:string; }
-export interface AgentTaskExecutor { execute(input:{agent:AgentRecord;capability:AgentCapability;input:Record<string,unknown>;signal:AbortSignal;invokeTool:<T>(toolName:string,operation:()=>Promise<T>)=>Promise<T>}):Promise<unknown>; }
+export interface AgentTaskExecutor { execute(input:{agent:AgentRecord;capability:AgentCapability;input:Record<string,unknown>;signal:AbortSignal;invokeTool:<T>(toolName:string,requiredCapability:AgentCapability,operation:()=>Promise<T>)=>Promise<T>}):Promise<unknown>; }
+const HUMAN_APPROVAL_CAPABILITIES=new Set<AgentCapability>(["crm.write","marketing.publish","finance.payment.prepare","operations.execute","evidence.write","agent.create"]);
 const CAPABILITIES=new Set<AgentCapability>(["crm.read","crm.draft","crm.write","marketing.research","marketing.draft","marketing.publish","finance.analyze","finance.forecast","finance.payment.prepare","research.web","research.documents","research.due_diligence","operations.plan","operations.execute","compliance.assess","evidence.read","evidence.write","funding.discover","security.assess","agent.create"]);
 function obj(v:unknown):Record<string,unknown>{if(!v||typeof v!=="object"||Array.isArray(v))throw new Error("REQUEST_BODY_INVALID");return v as Record<string,unknown>;}
 function str(v:unknown,k:string,max=2000):string{if(typeof v!=="string"||!v.trim()||v.length>max)throw new Error("FIELD_INVALID:"+k);return v.trim();}
@@ -79,10 +80,11 @@ export class PostgresAgentRuntime {
    if(!agent.profile.capabilities.includes(input.capability))throw new Error("CAPABILITY_NOT_IN_AGENT_PROFILE");
    const grant=await this.authorize(input.tenantId,agent,input.capability);
    if(!grant.allowed)throw new Error(grant.reason);
-   const inserted=await client.query<{task_id:string;status:string}>(`INSERT INTO nova_agents.tasks(tenant_id,task_id,agent_id,created_by,task_type,input,status,idempotency_key)
-    VALUES($1,$2,$3,$4,$5,$6::jsonb,'QUEUED',$7)
+   const taskStatus=HUMAN_APPROVAL_CAPABILITIES.has(input.capability)?"WAITING_APPROVAL":"QUEUED";
+   const inserted=await client.query<{task_id:string;status:string}>(`INSERT INTO nova_agents.tasks(tenant_id,task_id,agent_id,created_by,task_type,input,status,idempotency_key,error_code)
+    VALUES($1,$2,$3,$4,$5,$6::jsonb,$8,$7,$9)
     ON CONFLICT (tenant_id,idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-    RETURNING task_id,status`,[input.tenantId,input.taskId,input.agentId,input.createdBy,input.capability,JSON.stringify(input.input),input.idempotencyKey]);
+    RETURNING task_id,status`,[input.tenantId,input.taskId,input.agentId,input.createdBy,input.capability,JSON.stringify(input.input),input.idempotencyKey,taskStatus,taskStatus==="WAITING_APPROVAL"?"HUMAN_APPROVAL_REQUIRED":null]);
    if(!inserted.rows[0]){
     const duplicate=await client.query<{task_id:string;status:string;created_by:string;agent_id:string;task_type:string}>(`SELECT task_id,status,created_by,agent_id,task_type FROM nova_agents.tasks WHERE tenant_id=$1 AND idempotency_key=$2`,[input.tenantId,input.idempotencyKey]);
     if(!duplicate.rows[0])throw new Error("TASK_IDEMPOTENCY_CONFLICT");
@@ -90,8 +92,8 @@ export class PostgresAgentRuntime {
     await client.query("COMMIT");return{taskId:p.task_id,status:p.status};
    }
    await client.query(`INSERT INTO nova_agents.audit_events(tenant_id,event_id,actor_id,agent_id,event_type,details)
-    VALUES($1,$2,$3,$4,'AGENT_TASK_QUEUED',$5::jsonb)`,[input.tenantId,id("event"),input.createdBy,input.agentId,JSON.stringify({taskId:input.taskId,capability:input.capability})]);
-   await client.query("COMMIT");return{taskId:input.taskId,status:"QUEUED"};
+    VALUES($1,$2,$3,$4,$5,$6::jsonb)`,[input.tenantId,id("event"),input.createdBy,input.agentId,taskStatus==="WAITING_APPROVAL"?"AGENT_TASK_APPROVAL_REQUIRED":"AGENT_TASK_QUEUED",JSON.stringify({taskId:input.taskId,capability:input.capability})]);
+   await client.query("COMMIT");return{taskId:input.taskId,status:taskStatus};
   }catch(e){try{await client.query("ROLLBACK")}catch{}throw e;}finally{client.release();}
  }
  async getTask(tenantId:string,taskId:string):Promise<Record<string,unknown>|undefined>{
@@ -115,21 +117,22 @@ export class PostgresAgentRuntime {
   const authorization=await this.authorize(task.tenant_id,agent,task.task_type);
   if(!authorization.allowed){await this.finish(task,"WAITING_APPROVAL",null,authorization.reason);return true;}
   const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),timeoutMs);
-  const invokeTool=async <T>(toolName:string,operation:()=>Promise<T>):Promise<T>=>{
+  const invokeTool=async <T>(toolName:string,requiredCapability:AgentCapability,operation:()=>Promise<T>):Promise<T>=>{
    if(typeof toolName!=="string"||! /^[a-zA-Z0-9._:-]{1,120}$/.test(toolName))throw new Error("TOOL_NAME_INVALID");
    if(controller.signal.aborted)throw new Error("TASK_TIMEOUT");
    const latest=await this.factory.getAgent(task!.tenant_id,task!.agent_id);
    if(!latest||latest.lifecycle!=="ACTIVE")throw new Error("AGENT_NOT_ACTIVE");
-   const gate=await this.authorize(task!.tenant_id,latest,task!.task_type);
+   if(!CAPABILITIES.has(requiredCapability)||!latest.profile.capabilities.includes(requiredCapability))throw new Error("CAPABILITY_NOT_IN_AGENT_PROFILE");
+   const gate=await this.authorize(task!.tenant_id,latest,requiredCapability);
    if(!gate.allowed)throw new Error(gate.reason);
    // Write the intent audit before the side effect. Audit failure means the tool is never called.
-   await this.writeToolAudit(task!,toolName,"AGENT_TOOL_CALL_STARTED");
+   await this.writeToolAudit(task!,toolName,requiredCapability,"AGENT_TOOL_CALL_STARTED");
    try{
     const value=await operation();
-    await this.writeToolAudit(task!,toolName,"AGENT_TOOL_CALL_SUCCEEDED");
+    await this.writeToolAudit(task!,toolName,requiredCapability,"AGENT_TOOL_CALL_SUCCEEDED");
     return value;
    }catch(error){
-    try{await this.writeToolAudit(task!,toolName,"AGENT_TOOL_CALL_FAILED");}catch{}
+    try{await this.writeToolAudit(task!,toolName,requiredCapability,"AGENT_TOOL_CALL_FAILED");}catch{}
     throw error;
    }
   };
@@ -138,9 +141,9 @@ export class PostgresAgentRuntime {
   finally{clearTimeout(timeout);}
   return true;
  }
- private async writeToolAudit(task:{tenant_id:string;task_id:string;agent_id:string;created_by:string},toolName:string,eventType:string):Promise<void>{
+ private async writeToolAudit(task:{tenant_id:string;task_id:string;agent_id:string;created_by:string},toolName:string,capability:AgentCapability,eventType:string):Promise<void>{
   await this.pool.query(`INSERT INTO nova_agents.audit_events(tenant_id,event_id,actor_id,agent_id,event_type,details)
-   VALUES($1,$2,$3,$4,$5,$6::jsonb)`,[task.tenant_id,id("event"),task.created_by,task.agent_id,eventType,JSON.stringify({taskId:task.task_id,toolName})]);
+   VALUES($1,$2,$3,$4,$5,$6::jsonb)`,[task.tenant_id,id("event"),task.created_by,task.agent_id,eventType,JSON.stringify({taskId:task.task_id,toolName,capability})]);
  }
  private async finish(task:{tenant_id:string;task_id:string;agent_id:string;created_by:string},status:string,result:unknown,errorCode:string|null):Promise<void>{
   const c=await this.pool.connect();

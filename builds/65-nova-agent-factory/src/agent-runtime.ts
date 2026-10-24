@@ -153,7 +153,8 @@ export class PostgresAgentRuntime {
     throw error;
    }
   };
-  try{const result=await executor.execute({agent,capability:task.task_type,input:task.input,signal:controller.signal,invokeTool});await this.finish(task,"SUCCEEDED",result,null);}
+  const timeoutFailure=new Promise<never>((_,reject)=>controller.signal.addEventListener("abort",()=>reject(new Error("TASK_TIMEOUT")),{once:true}));
+  try{const result=await Promise.race([executor.execute({agent,capability:task.task_type,input:task.input,signal:controller.signal,invokeTool}),timeoutFailure]);await this.finish(task,"SUCCEEDED",result,null);}
   catch(e){await this.finish(task,"FAILED",null,controller.signal.aborted?"TASK_TIMEOUT":"EXECUTOR_FAILED");}
   finally{clearTimeout(timeout);}
   return true;

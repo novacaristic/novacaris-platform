@@ -125,12 +125,12 @@ export class AgentRuntimeApi {
    if(context.actor.type!=="user")return{status:403,body:{error:"HUMAN_ACTOR_REQUIRED"}};
    const path=req.path.replace(/\/+$/,"")||"/";
    const permission=path.match(/^\/api\/agents\/([^/]+)\/permissions$/);
-   if(permission&&(req.method==="POST"||req.method==="DELETE")){
+   if(permission&&req.method==="POST"){
     if(!await this.authorizeAction(context,"agent.permission.grant"))return{status:403,body:{error:"PERMISSION_ADMIN_REQUIRED"}};
     const b=obj(req.body);const capability=str(b.capability,"capability") as AgentCapability;if(!CAPABILITIES.has(capability))throw new Error("CAPABILITY_INVALID");
     const agentId=decodeURIComponent(permission[1]);
-    if(req.method==="POST"){const grant=await this.runtime.grant({tenantId:context.tenantId,agentId,capability,actorId:context.actor.reference,...(typeof b.expiresAt==="string"?{expiresAt:b.expiresAt}:{})});return{status:201,body:{grant}};}
-    await this.runtime.revoke({tenantId:context.tenantId,agentId,capability,actorId:context.actor.reference});return{status:200,body:{revoked:true}};
+    if(b.action==="REVOKE"){await this.runtime.revoke({tenantId:context.tenantId,agentId,capability,actorId:context.actor.reference});return{status:200,body:{revoked:true}};}
+    const grant=await this.runtime.grant({tenantId:context.tenantId,agentId,capability,actorId:context.actor.reference,...(typeof b.expiresAt==="string"?{expiresAt:b.expiresAt}:{})});return{status:201,body:{grant}};
    }
    if(req.method==="POST"&&path==="/api/tasks"){
     if(!this.executorConfigured)return{status:503,body:{error:"AGENT_EXECUTOR_NOT_CONFIGURED"}};

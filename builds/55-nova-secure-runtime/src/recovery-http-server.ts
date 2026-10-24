@@ -10,6 +10,7 @@ export interface RecoveryRuntimeOptions {
   api: RecoveryOperationsApi;
   workspaceApi?: { handle(request: ApiRequest): Promise<ApiResponse> };
   agentApi?: { handle(request: ApiRequest): Promise<ApiResponse> };
+  agentRuntimeApi?: { handle(request: ApiRequest): Promise<ApiResponse> };
   uiPath?: string;
   allowedOrigin?: string;
   serviceName?: string;
@@ -88,9 +89,12 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => { query[key] = value; });
       const apiRequest: ApiRequest = { method, path: url.pathname, query, body, headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : value])) };
-      const result: ApiResponse = url.pathname.startsWith("/api/agents")
-        ? options.agentApi ? await options.agentApi.handle(apiRequest) : { status: 404, body: { error: "AGENT_FACTORY_DISABLED" } }
-        : url.pathname.startsWith("/api/workspace") && options.workspaceApi
+      const isPermissionRoute = /^\\/api\\/agents\\/[^/]+\\/permissions$/.test(url.pathname);
+      const result: ApiResponse = (url.pathname.startsWith("/api/tasks") || isPermissionRoute)
+        ? options.agentRuntimeApi ? await options.agentRuntimeApi.handle(apiRequest) : { status: 404, body: { error: "AGENT_RUNTIME_DISABLED" } }
+        : url.pathname.startsWith("/api/agents")
+          ? options.agentApi ? await options.agentApi.handle(apiRequest) : { status: 404, body: { error: "AGENT_FACTORY_DISABLED" } }
+          : url.pathname.startsWith("/api/workspace") && options.workspaceApi
           ? await options.workspaceApi.handle(apiRequest)
           : await options.api.handle(apiRequest);
       send(response, result.status, result.body);

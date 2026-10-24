@@ -60,7 +60,7 @@ export class PostgresAgentRuntime {
  async authorize(tenantId:string,agent:AgentRecord,capability:AgentCapability,now=new Date()):Promise<{allowed:boolean;reason:string}>{
   const result=await this.pool.query<{permission_id:string;resource:string;decision:string;requires_human_approval:boolean;granted_by:string;expires_at:Date|string|null}>(
    `SELECT permission_id,resource,decision,requires_human_approval,granted_by,expires_at FROM nova_agents.agent_permissions
-    WHERE tenant_id=$1 AND agent_id=$2 AND resource=$3 ORDER BY created_at DESC LIMIT 1`,[tenantId,agent.id,capability]);
+    WHERE tenant_id=$1 AND agent_id=$2 AND resource=$3 ORDER BY (decision='ALLOW') DESC,created_at DESC,permission_id DESC LIMIT 1`,[tenantId,agent.id,capability]);
   const row=result.rows[0];
   if(!row)return{allowed:false,reason:"EXPLICIT_PERMISSION_GRANT_REQUIRED"};
   const grant:PermissionGrant={tenantId,agentId:agent.id,capability,grantedBy:row.granted_by,allowed:row.decision==="ALLOW",requiresHumanApproval:row.requires_human_approval,...(row.expires_at?{expiresAt:new Date(row.expires_at).toISOString()}:{})};
@@ -95,7 +95,7 @@ export class PostgresAgentRuntime {
   const c=await this.pool.connect();let task:{tenant_id:string;task_id:string;agent_id:string;created_by:string;task_type:AgentCapability;input:Record<string,unknown>}|undefined;
   try{
    await c.query("BEGIN");
-   const r=await c.query<typeof task extends infer T ? NonNullable<T> : never>(`SELECT tenant_id,task_id,agent_id,created_by,task_type,input FROM nova_agents.tasks WHERE status='QUEUED' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`);
+   const r=await c.query<typeof task extends infer T ? NonNullable<T> : never>(`SELECT tenant_id,task_id,agent_id,created_by,task_type,input FROM nova_agents.tasks WHERE status='QUEUED' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`);
    task=r.rows[0] as typeof task;
    if(!task){await c.query("COMMIT");return false;}
    await c.query("UPDATE nova_agents.tasks SET status='RUNNING',started_at=now() WHERE tenant_id=$1 AND task_id=$2",[task.tenant_id,task.task_id]);

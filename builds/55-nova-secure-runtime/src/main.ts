@@ -70,9 +70,21 @@ async function main(): Promise<void> {
     let executor: AgentTaskExecutor | undefined;
     const executorModulePath = process.env.NOVA_AGENT_EXECUTOR_MODULE?.trim();
     if (executorModulePath) {
+      // An explicitly reviewed adapter may register a narrow tool allowlist.
       const executorModule = await import(pathToFileURL(resolve(executorModulePath)).href) as { createAgentTaskExecutor?: () => AgentTaskExecutor; agentTaskExecutor?: AgentTaskExecutor };
       executor = typeof executorModule.createAgentTaskExecutor === "function" ? executorModule.createAgentTaskExecutor() : executorModule.agentTaskExecutor;
       if (!executor || typeof executor.execute !== "function") throw new Error("STARTUP_BLOCKED_AGENT_EXECUTOR_CONTRACT");
+    } else {
+      const provider = (process.env.NOVA_AGENT_PROVIDER ?? "").trim().toLowerCase();
+      if (provider === "openai") {
+        // Built-in adapter intentionally has no external tools. Tool access requires
+        // an explicitly reviewed executor module with per-tool invokeTool gating.
+        executor = createOpenAIAgentTaskExecutorFromEnv();
+      } else if (provider) {
+        throw new Error("STARTUP_BLOCKED_UNSUPPORTED_AGENT_PROVIDER");
+      }
+    }
+    if (executor) {
       let busy = false;
       agentWorker = setInterval(() => {
         if (busy) return;

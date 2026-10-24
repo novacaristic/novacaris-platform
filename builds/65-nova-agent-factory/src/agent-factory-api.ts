@@ -19,6 +19,16 @@ export class AgentFactoryApi {
    const context=await this.resolveContext(req);if(!context)return{status:401,body:{error:"AUTHENTICATION_REQUIRED"}};
    if(context.actor.type!=="user")return{status:403,body:{error:"HUMAN_ACTOR_REQUIRED"}};
    const path=req.path.replace(/\/+$/,"")||"/";
+   if(req.method==="GET"&&path==="/api/agents"){
+    if(!await this.authorize(context,"agent.manage"))return{status:403,body:{error:"AGENT_MANAGEMENT_FORBIDDEN"}};
+    return{status:200,body:{items:await this.factory.listAgents(context.tenantId)}};
+   }
+   const detail=path.match(/^\/api\/agents\/([^/]+)$/);
+   if(req.method==="GET"&&detail){
+    if(!await this.authorize(context,"agent.manage"))return{status:403,body:{error:"AGENT_MANAGEMENT_FORBIDDEN"}};
+    const item=await this.factory.getAgent(context.tenantId,decodeURIComponent(detail[1]));
+    return item?{status:200,body:{item}}:{status:404,body:{error:"AGENT_NOT_FOUND"}};
+   }
    if(req.method==="POST"&&path==="/api/agents"){
     if(!await this.authorize(context,"agent.manage"))return{status:403,body:{error:"AGENT_MANAGEMENT_FORBIDDEN"}};
     const b=object(req.body);const requestedCapabilities=b.requestedCapabilities;

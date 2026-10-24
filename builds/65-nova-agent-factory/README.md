@@ -11,7 +11,8 @@ Build 65 adds the first backend slice for command-driven creation and lifecycle 
 - PostgreSQL schema for profiles, permission grants, creation requests, tasks, and audit events.
 - Owner-authorized permission grant/revoke API with atomic audit writes and grant expiry support.
 - Tenant-scoped task submission/status API, idempotency keys, and a gated worker that re-checks active lifecycle and explicit permission immediately before execution.
-- External executor adapter contract loaded only when explicitly configured; task submission fails closed with HTTP 503 if no executor is configured.
+- Built-in OpenAI Responses API executor wired into the secure runtime when NOVA_AGENT_PROVIDER=openai; a reviewed custom executor module may override it.
+- Without a custom executor module, the built-in OpenAI adapter is deliberately text-only (empty tool allowlist); external side effects require a reviewed module and the per-tool invokeTool authorization/audit gate.
 - OpenAI Responses API adapter with bounded tool-call steps/output tokens, request cancellation, an explicit application-owned tool allowlist, and every registered tool routed through the runtime authorization/audit callback.
 - Deny-by-default permission policy with tenant checks, capability allowlists, active-state checks, grant expiry checks, and fail-closed handling when human approval is pending.
 - Unit tests for lifecycle rules, duplicate prevention, capability policy, self-approval denial, and tenant-scope denial.
@@ -28,8 +29,9 @@ Both routes require a verified Cognito user context and the agent.manage authori
 
 ## Safe defaults
 - `NOVA_AGENT_FACTORY_ENABLED` defaults to off. Set it to true only after both SQL migrations are reviewed and applied.
-- `NOVA_AGENT_EXECUTOR_MODULE` is optional and must point to a reviewed module exporting `createAgentTaskExecutor()` or `agentTaskExecutor`. Without it, the worker does not start unless `NOVA_AGENT_PROVIDER=openai` is selected.
-- OpenAI staging mode uses `OPENAI_API_KEY` and `OPENAI_MODEL` from server-side environment/secret injection. The built-in adapter has **no external tools by default**; a reviewed custom executor module must explicitly register each tool and route it through `invokeTool`.
+- NOVA_AGENT_FACTORY_ENABLED defaults to off in the staging template. Only enable after both SQL migrations are applied and staging readiness checks pass.
+- Set NOVA_AGENT_PROVIDER=openai to use the built-in OpenAI Responses API adapter. OPENAI_API_KEY and OPENAI_MODEL must be injected server-side from the staging secret manager; never commit real values.
+- The built-in OpenAI adapter is intentionally text-only and has **no external tools by default**. A reviewed NOVA_AGENT_EXECUTOR_MODULE may override it, but each registered tool must call invokeTool(toolName, requiredCapability, operation); do not wire arbitrary tools directly.
 - `NOVA_OPENAI_MAX_STEPS` defaults to 6 (maximum 12); `NOVA_OPENAI_MAX_OUTPUT_TOKENS` defaults to 1200 (maximum 8192). Provider response bodies are not forwarded to the model or API clients on errors.
 - New agents start at SPECIFIED; isolated build/test work can happen before activation approval.
 - Activation approval is required by default. Requesters cannot approve their own agent.
@@ -44,7 +46,9 @@ Run npm run check:agent-factory for the isolated typecheck and unit tests. The r
 ## Still required before production
 - Complete review of CI results and security review of this PR.
 - Apply migration in a controlled environment and run PostgreSQL integration tests.
-- Implement and independently review a provider-specific executor adapter, including provider credentials from a secret manager, spend/token limits, tool allowlists, cancellation, and content/data handling. The adapter must route every external tool/action through the supplied `invokeTool(toolName, requiredCapability, operation)` callback; it rechecks agent activation and the task's exact capability grant, rejects cross-capability tool calls, writes a pre-side-effect audit record, and fails closed if authorization or pre-audit fails. High-risk task types wait for explicit non-self human approval before entering the worker queue. The generic worker boundary exists, but no live model provider is bundled or configured.
+- Configure the staging secret manager with an OpenAI API key and a model ID enabled for the project; the repository does not prove that credentials or a specific model are available.
+- For external side effects, implement and independently review a narrow tool registry inside a custom executor module. Every external action must use `invokeTool(toolName, requiredCapability, operation)`, which rechecks agent activation and the task's exact capability grant, rejects cross-capability tool calls, writes a pre-side-effect audit record, and fails closed if authorization or pre-audit fails. High-risk task types wait for explicit non-self human approval before entering the worker queue.
+- Configure spend budgets, provider retries, metrics/alerts, rate limits, per-tenant quotas, backups/restore, and safe recovery of stale RUNNING tasks before broader rollout.
 - Connect the worker's capability check to each individual tool call and each external side effect inside any provider adapter; the generic worker gates task start but cannot inspect opaque adapter internals.
 - Add rate limiting, per-tenant quotas, operational metrics, backup/restore, alerting, and end-to-end PostgreSQL tests.
 - Configure Cognito issuer/client/group claims, database credentials and TLS through the deployment secret manager.

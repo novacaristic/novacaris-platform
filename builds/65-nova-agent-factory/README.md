@@ -40,7 +40,7 @@ Run npm run check:agent-factory for the isolated typecheck and unit tests. The r
 ## Still required before production
 - Complete review of CI results and security review of this PR.
 - Apply migration in a controlled environment and run PostgreSQL integration tests.
-- Implement and independently review a provider-specific executor adapter, including provider credentials from a secret manager, spend/token limits, tool allowlists, cancellation, and content/data handling. The generic worker boundary exists, but no live model provider is bundled or configured.
+- Implement and independently review a provider-specific executor adapter, including provider credentials from a secret manager, spend/token limits, tool allowlists, cancellation, and content/data handling. The adapter must route every external tool/action through the supplied `invokeTool()` callback; it rechecks agent activation and grants, writes a pre-side-effect audit record, and fails closed if authorization or pre-audit fails. The generic worker boundary exists, but no live model provider is bundled or configured.
 - Connect the worker's capability check to each individual tool call and each external side effect inside any provider adapter; the generic worker gates task start but cannot inspect opaque adapter internals.
 - Add rate limiting, per-tenant quotas, operational metrics, backup/restore, alerting, and end-to-end PostgreSQL tests.
 - Configure Cognito issuer/client/group claims, database credentials and TLS through the deployment secret manager.

@@ -117,16 +117,17 @@ export class PostgresAgentRuntime {
  }
  async runOne(executor?:AgentTaskExecutor,timeoutMs=60000):Promise<boolean>{
   if(!executor)return false;
-  const c=await this.pool.connect();let task:{tenant_id:string;task_id:string;agent_id:string;created_by:string;task_type:AgentCapability;input:Record<string,unknown>}|undefined;
+  const c=await this.pool.connect();let task:{tenant_id:string;task_id:string;agent_id:string;created_by:string;approved_by:string|null;task_type:AgentCapability;input:Record<string,unknown>}|undefined;
   try{
    await c.query("BEGIN");
-   const r=await c.query<typeof task extends infer T ? NonNullable<T> : never>(`SELECT tenant_id,task_id,agent_id,created_by,task_type,input FROM nova_agents.tasks WHERE status='QUEUED' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`);
+   const r=await c.query<typeof task extends infer T ? NonNullable<T> : never>(`SELECT tenant_id,task_id,agent_id,created_by,approved_by,task_type,input FROM nova_agents.tasks WHERE status='QUEUED' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED`);
    task=r.rows[0] as typeof task;
    if(!task){await c.query("COMMIT");return false;}
    await c.query("UPDATE nova_agents.tasks SET status='RUNNING',started_at=now() WHERE tenant_id=$1 AND task_id=$2",[task.tenant_id,task.task_id]);
    await c.query("COMMIT");
   }catch(e){try{await c.query("ROLLBACK")}catch{}throw e;}finally{c.release();}
   if(!task)return false;
+  if(HUMAN_APPROVAL_CAPABILITIES.has(task.task_type)&&(!task.approved_by||task.approved_by===task.created_by)){await this.finish(task,"WAITING_APPROVAL",null,"HUMAN_APPROVAL_REQUIRED");return true;}
   const agent=await this.factory.getAgent(task.tenant_id,task.agent_id);
   if(!agent||agent.lifecycle!=="ACTIVE"){await this.finish(task,"FAILED",null,"AGENT_NOT_ACTIVE");return true;}
   const authorization=await this.authorize(task.tenant_id,agent,task.task_type);
@@ -138,6 +139,7 @@ export class PostgresAgentRuntime {
    const latest=await this.factory.getAgent(task!.tenant_id,task!.agent_id);
    if(!latest||latest.lifecycle!=="ACTIVE")throw new Error("AGENT_NOT_ACTIVE");
    if(!CAPABILITIES.has(requiredCapability)||!latest.profile.capabilities.includes(requiredCapability))throw new Error("CAPABILITY_NOT_IN_AGENT_PROFILE");
+   if(HUMAN_APPROVAL_CAPABILITIES.has(requiredCapability)&&(!task!.approved_by||task!.approved_by===task!.created_by))throw new Error("HUMAN_APPROVAL_REQUIRED");
    const gate=await this.authorize(task!.tenant_id,latest,requiredCapability);
    if(!gate.allowed)throw new Error(gate.reason);
    // Write the intent audit before the side effect. Audit failure means the tool is never called.

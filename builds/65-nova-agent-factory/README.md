@@ -9,6 +9,9 @@ Build 65 adds the first backend slice for command-driven creation and lifecycle 
 - Authenticated API mounted in the existing secure runtime behind an explicit feature flag.
 - Default specialist catalog: sales, marketing, financial analysis, research/due diligence, operations, compliance/evidence, funding intelligence, and security/risk.
 - PostgreSQL schema for profiles, permission grants, creation requests, tasks, and audit events.
+- Owner-authorized permission grant/revoke API with atomic audit writes and grant expiry support.
+- Tenant-scoped task submission/status API, idempotency keys, and a gated worker that re-checks active lifecycle and explicit permission immediately before execution.
+- External executor adapter contract loaded only when explicitly configured; task submission fails closed with HTTP 503 if no executor is configured.
 - Deny-by-default permission policy with tenant checks, capability allowlists, active-state checks, grant expiry checks, and fail-closed handling when human approval is pending.
 - Unit tests for lifecycle rules, duplicate prevention, capability policy, self-approval denial, and tenant-scope denial.
 
@@ -16,11 +19,14 @@ Build 65 adds the first backend slice for command-driven creation and lifecycle 
 When enabled, the runtime exposes:
 - POST /api/agents — request a new agent specification.
 - POST /api/agents/:id/transition — request an allowed lifecycle transition.
+- POST/DELETE /api/agents/:id/permissions — grant or revoke a capability; requires `agent.permission.grant`.
+- POST /api/tasks and GET /api/tasks/:id — submit and inspect tenant-scoped tasks; requires `agent.task.submit` / `agent.task.read`, plus a live explicit capability grant.
 
 Both routes require a verified Cognito user context and the agent.manage authorization capability. Tenant ID and actor identity come from verified server context, never from request body fields. Creation does not grant execution access. Agents remain inactive until lifecycle and human approval gates are satisfied.
 
 ## Safe defaults
-- NOVA_AGENT_FACTORY_ENABLED defaults to off. Set it to true only after the SQL migration is reviewed and applied.
+- `NOVA_AGENT_FACTORY_ENABLED` defaults to off. Set it to true only after both SQL migrations are reviewed and applied.
+- `NOVA_AGENT_EXECUTOR_MODULE` is optional and must point to a reviewed module exporting `createAgentTaskExecutor()` or `agentTaskExecutor`. Without it, the worker does not start and task submissions return 503.
 - New agents start at SPECIFIED; isolated build/test work can happen before activation approval.
 - Activation approval is required by default. Requesters cannot approve their own agent.
 - Unknown capabilities are rejected; no automatic permission escalation.
@@ -34,9 +40,9 @@ Run npm run check:agent-factory for the isolated typecheck and unit tests. The r
 ## Still required before production
 - Complete review of CI results and security review of this PR.
 - Apply migration in a controlled environment and run PostgreSQL integration tests.
-- Add the task dispatcher/worker and provider-specific LLM adapters, with spend/time limits and cancellation.
-- Persist and manage permission grants through an owner-authorized API; connect the permission decision to every tool invocation and external side effect.
-- Add list/detail endpoints, task status/reporting endpoints, rate limits, idempotency keys, operational metrics, backup/restore, and alerting.
+- Implement and independently review a provider-specific executor adapter, including provider credentials from a secret manager, spend/token limits, tool allowlists, cancellation, and content/data handling. The generic worker boundary exists, but no live model provider is bundled or configured.
+- Connect the worker's capability check to each individual tool call and each external side effect inside any provider adapter; the generic worker gates task start but cannot inspect opaque adapter internals.
+- Add rate limiting, per-tenant quotas, operational metrics, backup/restore, alerting, and end-to-end PostgreSQL tests.
 - Configure Cognito issuer/client/group claims, database credentials and TLS through the deployment secret manager.
 - Perform end-to-end tenant-isolation, authorization, audit-failure, and abuse-case testing before enabling in production.
 

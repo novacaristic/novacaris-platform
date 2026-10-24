@@ -34,6 +34,10 @@ export class PostgresAgentRuntime {
    await client.query(`INSERT INTO nova_agents.agent_permissions(tenant_id,permission_id,agent_id,resource,actions,scopes,decision,requires_human_approval,granted_by,expires_at)
     VALUES($1,$2,$3,$4,'["invoke"]'::jsonb,'[]'::jsonb,'ALLOW',false,$5,$6::timestamptz)`,
     [input.tenantId,permissionId,input.agentId,input.capability,input.actorId,input.expiresAt??null]);
+   await client.query(`UPDATE nova_agents.tasks SET status='QUEUED',error_code=NULL,finished_at=NULL
+    WHERE tenant_id=$1 AND agent_id=$2 AND task_type=$3 AND status='WAITING_APPROVAL'
+      AND error_code IN ('EXPLICIT_PERMISSION_GRANT_REQUIRED','PERMISSION_GRANT_EXPIRED')`,
+    [input.tenantId,input.agentId,input.capability]);
    await client.query(`INSERT INTO nova_agents.audit_events(tenant_id,event_id,actor_id,agent_id,event_type,occurred_at,details)
     VALUES($1,$2,$3,$4,'AGENT_PERMISSION_GRANTED',$5::timestamptz,$6::jsonb)`,
     [input.tenantId,id("event"),input.actorId,input.agentId,now.toISOString(),JSON.stringify({permissionId,capability:input.capability,expiresAt:input.expiresAt??null})]);

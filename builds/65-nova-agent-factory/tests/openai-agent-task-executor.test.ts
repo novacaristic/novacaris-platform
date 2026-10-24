@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOpenAIAgentTaskExecutor, type OpenAIFunctionTool } from "../src/openai-agent-task-executor.js";
-import type { AgentRecord } from "../src/agent-factory.js";
+import type { AgentCapability, AgentRecord } from "../src/agent-factory.js";
 
 const agent = { id:"a1", tenantId:"t1", lifecycle:"ACTIVE", profile:{ name:"Research", purpose:"Research safely", capabilities:["research.web"] } } as unknown as AgentRecord;
 const tool: OpenAIFunctionTool = {
@@ -15,7 +15,7 @@ describe("OpenAI Responses adapter",()=>{
     const fetchImpl=vi.fn()
       .mockResolvedValueOnce(response({id:"resp_1",output:[{type:"function_call",name:"search_docs",call_id:"call_1",arguments:'{"query":"policy"}'}]}))
       .mockResolvedValueOnce(response({id:"resp_2",output:[],output_text:"Found approved policy."}));
-    const invokeTool=vi.fn(async (_name:string,_cap:string,operation:()=>Promise<unknown>)=>operation());
+    const invokeTool=vi.fn(async <T>(_name:string,_cap:AgentCapability,operation:()=>Promise<T>):Promise<T>=>operation());
     const executor=createOpenAIAgentTaskExecutor({apiKey:"test-key",model:"test-model",tools:[tool],fetchImpl});
     const result=await executor.execute({agent,capability:"research.web",input:{query:"policy"},signal:new AbortController().signal,invokeTool});
     expect(invokeTool).toHaveBeenCalledTimes(1);

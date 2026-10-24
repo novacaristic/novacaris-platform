@@ -14,6 +14,7 @@ import { AgentFactory, defaultFactoryPolicy } from "../../../builds/65-nova-agen
 import { AgentFactoryApi, type AgentApiRequest } from "../../../builds/65-nova-agent-factory/src/agent-factory-api";
 import { PostgresAgentFactoryStore } from "../../../builds/65-nova-agent-factory/src/postgres-agent-factory-store";
 import { AgentRuntimeApi, PostgresAgentRuntime, type AgentTaskExecutor } from "../../../builds/65-nova-agent-factory/src/agent-runtime";
+import { createOpenAIAgentTaskExecutorFromEnv } from "../../../builds/65-nova-agent-factory/src/openai-agent-task-executor";
 
 interface HostSecurityAdapter {
   resolveContext: AuthenticatedContextResolver;

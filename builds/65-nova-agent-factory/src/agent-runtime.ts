@@ -11,7 +11,7 @@ interface Pool { query<T=Record<string,unknown>>(sql:string,values?:unknown[]):P
 type Resolver=(request:RuntimeRequest)=>Promise<RequestContext|null>;
 type Authorizer=(context:RequestContext,action:string)=>Promise<boolean>;
 export interface AgentTaskInput { tenantId:string; agentId:string; taskId:string; createdBy:string; capability:AgentCapability; input:Record<string,unknown>; idempotencyKey:string; }
-export interface AgentTaskExecutor { execute(input:{agent:AgentRecord;capability:AgentCapability;input:Record<string,unknown>;signal:AbortSignal}):Promise<unknown>; }
+export interface AgentTaskExecutor { execute(input:{agent:AgentRecord;capability:AgentCapability;input:Record<string,unknown>;signal:AbortSignal;invokeTool:<T>(toolName:string,operation:()=>Promise<T>)=>Promise<T>}):Promise<unknown>; }
 const CAPABILITIES=new Set<AgentCapability>(["crm.read","crm.draft","crm.write","marketing.research","marketing.draft","marketing.publish","finance.analyze","finance.forecast","finance.payment.prepare","research.web","research.documents","research.due_diligence","operations.plan","operations.execute","compliance.assess","evidence.read","evidence.write","funding.discover","security.assess","agent.create"]);
 function obj(v:unknown):Record<string,unknown>{if(!v||typeof v!=="object"||Array.isArray(v))throw new Error("REQUEST_BODY_INVALID");return v as Record<string,unknown>;}
 function str(v:unknown,k:string,max=2000):string{if(typeof v!=="string"||!v.trim()||v.length>max)throw new Error("FIELD_INVALID:"+k);return v.trim();}
@@ -107,10 +107,32 @@ export class PostgresAgentRuntime {
   const authorization=await this.authorize(task.tenant_id,agent,task.task_type);
   if(!authorization.allowed){await this.finish(task,"WAITING_APPROVAL",null,authorization.reason);return true;}
   const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),timeoutMs);
-  try{const result=await executor.execute({agent,capability:task.task_type,input:task.input,signal:controller.signal});await this.finish(task,"SUCCEEDED",result,null);}
+  const invokeTool=async <T>(toolName:string,operation:()=>Promise<T>):Promise<T>=>{
+   if(typeof toolName!=="string"||! /^[a-zA-Z0-9._:-]{1,120}$/.test(toolName))throw new Error("TOOL_NAME_INVALID");
+   if(controller.signal.aborted)throw new Error("TASK_TIMEOUT");
+   const latest=await this.factory.getAgent(task!.tenant_id,task!.agent_id);
+   if(!latest||latest.lifecycle!=="ACTIVE")throw new Error("AGENT_NOT_ACTIVE");
+   const gate=await this.authorize(task!.tenant_id,latest,task!.task_type);
+   if(!gate.allowed)throw new Error(gate.reason);
+   // Write the intent audit before the side effect. Audit failure means the tool is never called.
+   await this.writeToolAudit(task!,toolName,"AGENT_TOOL_CALL_STARTED");
+   try{
+    const value=await operation();
+    await this.writeToolAudit(task!,toolName,"AGENT_TOOL_CALL_SUCCEEDED");
+    return value;
+   }catch(error){
+    try{await this.writeToolAudit(task!,toolName,"AGENT_TOOL_CALL_FAILED");}catch{}
+    throw error;
+   }
+  };
+  try{const result=await executor.execute({agent,capability:task.task_type,input:task.input,signal:controller.signal,invokeTool});await this.finish(task,"SUCCEEDED",result,null);}
   catch(e){await this.finish(task,"FAILED",null,controller.signal.aborted?"TASK_TIMEOUT":"EXECUTOR_FAILED");}
   finally{clearTimeout(timeout);}
   return true;
+ }
+ private async writeToolAudit(task:{tenant_id:string;task_id:string;agent_id:string;created_by:string},toolName:string,eventType:string):Promise<void>{
+  await this.pool.query(`INSERT INTO nova_agents.audit_events(tenant_id,event_id,actor_id,agent_id,event_type,details)
+   VALUES($1,$2,$3,$4,$5,$6::jsonb)`,[task.tenant_id,id("event"),task.created_by,task.agent_id,eventType,JSON.stringify({taskId:task.task_id,toolName})]);
  }
  private async finish(task:{tenant_id:string;task_id:string;agent_id:string;created_by:string},status:string,result:unknown,errorCode:string|null):Promise<void>{
   const c=await this.pool.connect();

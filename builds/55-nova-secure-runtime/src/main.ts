@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   let agentWorker: ReturnType<typeof setInterval> | undefined;
   if (process.env.NOVA_AGENT_FACTORY_ENABLED === "true") {
     const schema = await pool.query<{ready:boolean}>(
-      "SELECT to_regclass('nova_agents.agent_profiles') IS NOT NULL AND to_regclass('nova_agents.agent_permissions') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='nova_agents' AND table_name='tasks' AND column_name='idempotency_key') AS ready"
+      "SELECT to_regclass('nova_agents.agent_profiles') IS NOT NULL AND to_regclass('nova_agents.agent_permissions') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='nova_agents' AND table_name='tasks' AND column_name='idempotency_key') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='nova_agents' AND table_name='tasks' AND column_name='approved_by') AS ready"
     );
     if (!schema.rows[0]?.ready) throw new Error("STARTUP_BLOCKED_AGENT_RUNTIME_MIGRATIONS_REQUIRED");
     const factory = new AgentFactory(new PostgresAgentFactoryStore(pool), defaultFactoryPolicy);

@@ -89,7 +89,7 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => { query[key] = value; });
       const apiRequest: ApiRequest = { method, path: url.pathname, query, body, headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : value])) };
-      const isPermissionRoute = /^\\/api\\/agents\\/[^/]+\\/permissions$/.test(url.pathname);
+      const isPermissionRoute = url.pathname.startsWith("/api/agents/") && url.pathname.endsWith("/permissions") && url.pathname.split("/").length === 5;
       const result: ApiResponse = (url.pathname.startsWith("/api/tasks") || isPermissionRoute)
         ? options.agentRuntimeApi ? await options.agentRuntimeApi.handle(apiRequest) : { status: 404, body: { error: "AGENT_RUNTIME_DISABLED" } }
         : url.pathname.startsWith("/api/agents")

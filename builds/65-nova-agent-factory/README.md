@@ -19,7 +19,7 @@ Build 65 adds the first backend slice for command-driven creation and lifecycle 
 When enabled, the runtime exposes:
 - POST /api/agents — request a new agent specification.
 - POST /api/agents/:id/transition — request an allowed lifecycle transition.
-- POST/DELETE /api/agents/:id/permissions — grant or revoke a capability; requires `agent.permission.grant`.
+- POST /api/agents/:id/permissions — grant a capability, or send `{"action":"REVOKE","capability":"..."}` to revoke; requires `agent.permission.grant`.
 - POST /api/tasks and GET /api/tasks/:id — submit and inspect tenant-scoped tasks; requires `agent.task.submit` / `agent.task.read`, plus a live explicit capability grant.
 
 Both routes require a verified Cognito user context and the agent.manage authorization capability. Tenant ID and actor identity come from verified server context, never from request body fields. Creation does not grant execution access. Agents remain inactive until lifecycle and human approval gates are satisfied.

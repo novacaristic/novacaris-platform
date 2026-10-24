@@ -15,5 +15,6 @@ export function decideAgentCapability(input:{principal:Principal|null;agent:Agen
  if(grant.expiresAt&&new Date(grant.expiresAt).getTime()<=(input.now??new Date()).getTime())return{allowed:false,requiresHumanApproval:false,reason:"PERMISSION_GRANT_EXPIRED"};
  if(principal.role==="agent"&&principal.subject===grant.grantedBy)return{allowed:false,requiresHumanApproval:false,reason:"AGENT_CANNOT_GRANT_OWN_PERMISSION"};
  if(!["owner","administrator"].includes(principal.role)&&!principal.capabilities.includes("agent.permission.grant"))return{allowed:false,requiresHumanApproval:false,reason:"PERMISSION_ADMIN_ROLE_REQUIRED"};
- return{allowed:true,requiresHumanApproval:grant.requiresHumanApproval,reason:grant.requiresHumanApproval?"ALLOWED_PENDING_HUMAN_APPROVAL":"ALLOWED"};
+ if(grant.requiresHumanApproval)return{allowed:false,requiresHumanApproval:true,reason:"HUMAN_APPROVAL_REQUIRED"};
+ return{allowed:true,requiresHumanApproval:false,reason:"ALLOWED"};
 }

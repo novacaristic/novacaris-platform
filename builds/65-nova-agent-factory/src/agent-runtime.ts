@@ -71,8 +71,8 @@ export class PostgresAgentRuntime {
   const client=await this.pool.connect();
   try{
    await client.query("BEGIN");
-   const prior=await client.query<{task_id:string;status:string}>(`SELECT task_id,status FROM nova_agents.tasks WHERE tenant_id=$1 AND idempotency_key=$2`,[input.tenantId,input.idempotencyKey]);
-   if(prior.rows[0]){await client.query("COMMIT");return{taskId:prior.rows[0].task_id,status:prior.rows[0].status};}
+   const prior=await client.query<{task_id:string;status:string;created_by:string;agent_id:string;task_type:string}>(`SELECT task_id,status,created_by,agent_id,task_type FROM nova_agents.tasks WHERE tenant_id=$1 AND idempotency_key=$2`,[input.tenantId,input.idempotencyKey]);
+   if(prior.rows[0]){const p=prior.rows[0];if(p.created_by!==input.createdBy||p.agent_id!==input.agentId||p.task_type!==input.capability)throw new Error("TASK_IDEMPOTENCY_CONFLICT");await client.query("COMMIT");return{taskId:p.task_id,status:p.status};}
    const agent=await this.factory.getAgent(input.tenantId,input.agentId);
    if(!agent)throw new Error("AGENT_NOT_FOUND");
    if(agent.lifecycle!=="ACTIVE")throw new Error("AGENT_NOT_ACTIVE");
@@ -84,9 +84,10 @@ export class PostgresAgentRuntime {
     ON CONFLICT (tenant_id,idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
     RETURNING task_id,status`,[input.tenantId,input.taskId,input.agentId,input.createdBy,input.capability,JSON.stringify(input.input),input.idempotencyKey]);
    if(!inserted.rows[0]){
-    const duplicate=await client.query<{task_id:string;status:string}>(`SELECT task_id,status FROM nova_agents.tasks WHERE tenant_id=$1 AND idempotency_key=$2`,[input.tenantId,input.idempotencyKey]);
+    const duplicate=await client.query<{task_id:string;status:string;created_by:string;agent_id:string;task_type:string}>(`SELECT task_id,status,created_by,agent_id,task_type FROM nova_agents.tasks WHERE tenant_id=$1 AND idempotency_key=$2`,[input.tenantId,input.idempotencyKey]);
     if(!duplicate.rows[0])throw new Error("TASK_IDEMPOTENCY_CONFLICT");
-    await client.query("COMMIT");return{taskId:duplicate.rows[0].task_id,status:duplicate.rows[0].status};
+    const p=duplicate.rows[0];if(p.created_by!==input.createdBy||p.agent_id!==input.agentId||p.task_type!==input.capability)throw new Error("TASK_IDEMPOTENCY_CONFLICT");
+    await client.query("COMMIT");return{taskId:p.task_id,status:p.status};
    }
    await client.query(`INSERT INTO nova_agents.audit_events(tenant_id,event_id,actor_id,agent_id,event_type,details)
     VALUES($1,$2,$3,$4,'AGENT_TASK_QUEUED',$5::jsonb)`,[input.tenantId,id("event"),input.createdBy,input.agentId,JSON.stringify({taskId:input.taskId,capability:input.capability})]);

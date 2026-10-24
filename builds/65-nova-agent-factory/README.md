@@ -12,6 +12,7 @@ Build 65 adds the first backend slice for command-driven creation and lifecycle 
 - Owner-authorized permission grant/revoke API with atomic audit writes and grant expiry support.
 - Tenant-scoped task submission/status API, idempotency keys, and a gated worker that re-checks active lifecycle and explicit permission immediately before execution.
 - External executor adapter contract loaded only when explicitly configured; task submission fails closed with HTTP 503 if no executor is configured.
+- OpenAI Responses API adapter with bounded tool-call steps/output tokens, request cancellation, an explicit application-owned tool allowlist, and every registered tool routed through the runtime authorization/audit callback.
 - Deny-by-default permission policy with tenant checks, capability allowlists, active-state checks, grant expiry checks, and fail-closed handling when human approval is pending.
 - Unit tests for lifecycle rules, duplicate prevention, capability policy, self-approval denial, and tenant-scope denial.
 
@@ -27,7 +28,9 @@ Both routes require a verified Cognito user context and the agent.manage authori
 
 ## Safe defaults
 - `NOVA_AGENT_FACTORY_ENABLED` defaults to off. Set it to true only after both SQL migrations are reviewed and applied.
-- `NOVA_AGENT_EXECUTOR_MODULE` is optional and must point to a reviewed module exporting `createAgentTaskExecutor()` or `agentTaskExecutor`. Without it, the worker does not start and task submissions return 503.
+- `NOVA_AGENT_EXECUTOR_MODULE` is optional and must point to a reviewed module exporting `createAgentTaskExecutor()` or `agentTaskExecutor`. Without it, the worker does not start unless `NOVA_AGENT_PROVIDER=openai` is selected.
+- OpenAI staging mode uses `OPENAI_API_KEY` and `OPENAI_MODEL` from server-side environment/secret injection. The built-in adapter has **no external tools by default**; a reviewed custom executor module must explicitly register each tool and route it through `invokeTool`.
+- `NOVA_OPENAI_MAX_STEPS` defaults to 6 (maximum 12); `NOVA_OPENAI_MAX_OUTPUT_TOKENS` defaults to 1200 (maximum 8192). Provider response bodies are not forwarded to the model or API clients on errors.
 - New agents start at SPECIFIED; isolated build/test work can happen before activation approval.
 - Activation approval is required by default. Requesters cannot approve their own agent.
 - Unknown capabilities are rejected; no automatic permission escalation.

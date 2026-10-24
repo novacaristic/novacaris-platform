@@ -118,7 +118,7 @@ export class PostgresAgentRuntime {
 }
 
 export class AgentRuntimeApi {
- constructor(private readonly resolveContext:Resolver,private readonly authorizeAction:Authorizer,private readonly factory:AgentFactory,private readonly runtime:PostgresAgentRuntime){}
+ constructor(private readonly resolveContext:Resolver,private readonly authorizeAction:Authorizer,private readonly factory:AgentFactory,private readonly runtime:PostgresAgentRuntime,private readonly executorConfigured:boolean){}
  async handle(req:RuntimeRequest):Promise<RuntimeResponse>{
   try{
    const context=await this.resolveContext(req);if(!context)return{status:401,body:{error:"AUTHENTICATION_REQUIRED"}};
@@ -133,6 +133,7 @@ export class AgentRuntimeApi {
     await this.runtime.revoke({tenantId:context.tenantId,agentId,capability,actorId:context.actor.reference});return{status:200,body:{revoked:true}};
    }
    if(req.method==="POST"&&path==="/api/tasks"){
+    if(!this.executorConfigured)return{status:503,body:{error:"AGENT_EXECUTOR_NOT_CONFIGURED"}};
     if(!await this.authorizeAction(context,"agent.task.submit"))return{status:403,body:{error:"TASK_SUBMISSION_FORBIDDEN"}};
     const b=obj(req.body);const agentId=str(b.agentId,"agentId",200);const capability=str(b.capability,"capability") as AgentCapability;if(!CAPABILITIES.has(capability))throw new Error("CAPABILITY_INVALID");
     const input=obj(b.input);const key=str(req.headers?.["idempotency-key"]??b.idempotencyKey,"idempotencyKey",200);

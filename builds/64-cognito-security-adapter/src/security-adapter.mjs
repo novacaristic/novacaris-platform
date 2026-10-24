@@ -69,8 +69,8 @@ function permissions(claims) {
 const roleCapabilities = {
   clinician: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit"]),
   supervisor: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","workspace.note.approve","workspace.note.request_changes"]),
-  administrator: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","workspace.note.approve","workspace.note.request_changes","recovery.read","recovery.escalation.open","recovery.escalation.acknowledge","recovery.escalation.assign","recovery.escalation.resolve","recovery.execution.review","agent.manage","agent.delegate","agent.permission.grant","agent.task.submit","agent.task.read"]),
-  owner: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","agent.manage","agent.delegate","agent.permission.grant","agent.task.submit","agent.task.read"]),
+  administrator: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","workspace.note.approve","workspace.note.request_changes","recovery.read","recovery.escalation.open","recovery.escalation.acknowledge","recovery.escalation.assign","recovery.escalation.resolve","recovery.execution.review","agent.manage","agent.delegate","agent.permission.grant","agent.task.submit","agent.task.read","agent.task.approve"]),
+  owner: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","agent.manage","agent.delegate","agent.permission.grant","agent.task.submit","agent.task.read","agent.task.approve"]),
   agent: new Set([])
 };
 function auditPoolInstance() {

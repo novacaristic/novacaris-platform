@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS nova_agents.agent_profiles (
  risk text NOT NULL CHECK (risk IN ('LOW','MODERATE','HIGH','CRITICAL')),
  capabilities jsonb NOT NULL CHECK (jsonb_typeof(capabilities)='array'),
  action_ceiling text NOT NULL CHECK (action_ceiling IN ('READ','RECOMMEND','PREPARE','EXECUTE_WITH_APPROVAL','AUTONOMOUS')),
+ requires_human_approval boolean NOT NULL DEFAULT true,
  lifecycle text NOT NULL CHECK (lifecycle IN ('REQUESTED','SPECIFIED','BUILDING','TESTING','APPROVAL_REQUIRED','APPROVED','REGISTERED','ACTIVE','SUSPENDED','FAILED','RETIRED')),
  requested_by text NOT NULL, approved_by text, version integer NOT NULL DEFAULT 1 CHECK (version>0),
  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),

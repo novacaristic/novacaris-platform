@@ -22,6 +22,9 @@ They are not separate from the platform. They convert NovaCarïs intelligence in
 
 Turn NovaCarïs operating knowledge into structured learning, practical capability, assessments, portfolio evidence, and professional pathways.
 
+
+> See `docs/academy-curriculum-and-career-launch.md` for the learning levels, Career Launch track, material status and credential wording rules that supplement this ladder.
+
 ### Academy product ladder
 
 1. **Free Intelligence**

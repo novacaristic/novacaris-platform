@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 360" font-family="Arial, Helvetica, sans-serif">
+<rect width="680" height="360" fill="#ffffff"/>
+<text x="340" y="32" text-anchor="middle" font-size="20" font-weight="bold" fill="#1a1a1a">The AI Stoplight: what can I share?</text>
+<g font-size="15" fill="#1a1a1a">
+<circle cx="70" cy="105" r="30" fill="#16a34a"/><text x="70" y="111" text-anchor="middle" font-size="14" font-weight="bold" fill="#fff">GO</text>
+<text x="125" y="100" font-weight="bold">Public information, approved tool</text><text x="125" y="122" font-size="13">Example: brainstorming a public flyer</text>
+<circle cx="70" cy="190" r="30" fill="#eab308"/><text x="70" y="196" text-anchor="middle" font-size="12" font-weight="bold" fill="#111">CHECK</text>
+<text x="125" y="185" font-weight="bold">Internal information: ask your owner first</text><text x="125" y="207" font-size="13">Example: draft policies, staff schedules</text>
+<circle cx="70" cy="275" r="30" fill="#dc2626"/><text x="70" y="281" text-anchor="middle" font-size="14" font-weight="bold" fill="#fff">STOP</text>
+<text x="125" y="270" font-weight="bold">Private or patient data in an unapproved tool</text><text x="125" y="292" font-size="13">Example: client names with health details</text>
+</g>
+<text x="340" y="340" text-anchor="middle" font-size="13" fill="#444">Words label every light, so it works without color.</text>
+</svg>

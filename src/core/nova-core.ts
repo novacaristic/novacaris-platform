@@ -26,7 +26,7 @@ export interface NOVARequest {
 
 export interface NOVAResult {
   requestId: string;
-  readiness?: MPRIMEAssessment;
+  readiness?: MPRIMEAssessment | undefined;
   compliance: ComplianceAssessment[];
   funding: FundingScore[];
   authorization: {

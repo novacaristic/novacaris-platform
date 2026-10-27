@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" font-family="Arial, Helvetica, sans-serif">
+<rect width="680" height="420" fill="#ffffff"/>
+<text x="340" y="30" text-anchor="middle" font-size="20" font-weight="bold" fill="#1a1a1a">The AI Ladder: climb one step at a time</text>
+<g font-size="15" fill="#1a1a1a">
+<rect x="60" y="320" width="560" height="56" rx="8" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+<text x="80" y="346" font-weight="bold">Level 1: Start</text><text x="80" y="366" font-size="13">Ask clearly, check every answer</text>
+<rect x="110" y="246" width="510" height="56" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
+<text x="130" y="272" font-weight="bold">Level 2: Safe use</text><text x="130" y="292" font-size="13">Protect private data; follow the stoplight</text>
+<rect x="160" y="172" width="460" height="56" rx="8" fill="#fef9c3" stroke="#a16207" stroke-width="2"/>
+<text x="180" y="198" font-weight="bold">Level 3: Lead</text><text x="180" y="218" font-size="13">Choose tools, set rules, guide your team</text>
+<rect x="210" y="98" width="410" height="56" rx="8" fill="#fce7f3" stroke="#be185d" stroke-width="2"/>
+<text x="230" y="124" font-weight="bold">Level 4: Build and secure</text><text x="230" y="144" font-size="13">Automate, test, and protect what you build</text>
+</g>
+<text x="340" y="406" text-anchor="middle" font-size="13" fill="#444">Each step needs the one below it.</text>
+</svg>

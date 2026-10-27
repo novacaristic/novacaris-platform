@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" font-family="Arial, Helvetica, sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#333"/></marker></defs>
+<rect width="760" height="320" fill="#ffffff"/>
+<text x="380" y="30" text-anchor="middle" font-size="20" font-weight="bold" fill="#1a1a1a">How an AI agent works: a loop with a human check</text>
+<g font-size="15" text-anchor="middle" fill="#1a1a1a">
+<rect x="20" y="110" width="110" height="60" rx="8" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/><text x="75" y="145">Goal</text>
+<rect x="170" y="110" width="110" height="60" rx="8" fill="#e0e7ff" stroke="#4338ca" stroke-width="2"/><text x="225" y="145">Plan</text>
+<rect x="320" y="110" width="110" height="60" rx="8" fill="#dcfce7" stroke="#15803d" stroke-width="2"/><text x="375" y="145">Act</text>
+<rect x="470" y="110" width="110" height="60" rx="8" fill="#fef9c3" stroke="#a16207" stroke-width="2"/><text x="525" y="145">Check</text>
+<rect x="620" y="100" width="120" height="80" rx="8" fill="#fee2e2" stroke="#b91c1c" stroke-width="4"/><text x="680" y="133">Human</text><text x="680" y="153">approves</text>
+</g>
+<g stroke="#333" stroke-width="2" fill="none" marker-end="url(#a)">
+<line x1="130" y1="140" x2="168" y2="140"/><line x1="280" y1="140" x2="318" y2="140"/><line x1="430" y1="140" x2="468" y2="140"/><line x1="580" y1="140" x2="618" y2="140"/>
+<path d="M525 170 Q525 250 225 250 Q225 215 225 172"/>
+</g>
+<text x="375" y="274" text-anchor="middle" font-size="14" fill="#333" stroke="#fff" stroke-width="4" paint-order="stroke">Not done? Loop back to Plan</text>
+<text x="380" y="302" text-anchor="middle" font-size="13" fill="#444">Risky steps always wait for a person.</text>
+</svg>

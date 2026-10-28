@@ -1,4 +1,5 @@
--- NCI persistence schema (DRAFT, not yet run against a database).
+-- NCI persistence schema. Run against a throwaway PostgreSQL 16 and exercised by tests/pg-store.test.ts.
+-- Create the application role first (as an admin):  CREATE ROLE nci_app LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
 -- Every table carries tenant_id and is protected by row-level security keyed to app.tenant_id.
 -- The application must SET LOCAL app.tenant_id = '<tenant>' inside each transaction, using a role that is NOT the table owner.
 CREATE TABLE nci_snapshot (
@@ -29,3 +30,7 @@ ALTER TABLE nci_audit ENABLE ROW LEVEL SECURITY;
 ALTER TABLE nci_audit FORCE ROW LEVEL SECURITY;
 CREATE POLICY nci_audit_select ON nci_audit FOR SELECT USING (tenant_id = current_setting('app.tenant_id', true));
 CREATE POLICY nci_audit_insert ON nci_audit FOR INSERT WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- The application role may read and write snapshots and read and append audit rows. It cannot update or delete audit rows.
+GRANT SELECT, INSERT, UPDATE ON nci_snapshot TO nci_app;
+GRANT SELECT, INSERT ON nci_audit TO nci_app;

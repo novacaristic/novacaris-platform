@@ -18,9 +18,15 @@ Regulation → Requirement → Control → Evidence → Gap → Corrective actio
   - "Met" can only be recorded by a named person, with a note, and only when no gap is open.
   - Every action goes into a hash-chained audit trail; `verifyAuditChain` detects edits.
 
+## Also in this build
+
+- **Persistence and tenant isolation:** `TenantRegistry` gives each tenant its own engine, refuses people who do not belong to the tenant, validates tenant ids, and reloads from snapshots only if the tenant matches and the audit chain is intact. `FileStore` is for local use. `sql/001_nci_schema.sql` is a DRAFT Postgres schema with row-level security and an append-only audit table; it has not been run against a database.
+- **AI drafting layer:** `draftProposals` takes an injected model, rejects any suggestion whose quoted source text is not actually in the source, and files the rest as pending proposals. Only a named person can accept one. No model is connected, and no network call is made.
+- **Review page:** `renderReportHtml` makes a read-only page (rails summary, open gaps, items waiting for a person, audit trail with chain check). Try it: `tsx scripts/demo-seed.ts <dir>` then `tsx scripts/nci-report.ts demo-tenant <dir> 2026-11-01 > report.html`.
+
 ## Not built yet
 
-AI interpretation of regulations; automatic regulatory feeds; database storage; user interface; multi-tenant isolation (one engine per tenant today); pharmacy, payment and EHR integrations; tamper-proofing beyond the in-memory hash chain; independent security testing. Do not put real patient records, prescriptions or payment-card data into anything built on this.
+A connected AI model and prompt design; automatic regulatory feeds; a Postgres store wired to the schema; an interactive web interface with sign-in (the page is read-only); pharmacy, payment and EHR integrations; tamper-proofing beyond the hash chain; independent security testing. Do not put real patient records, prescriptions or payment-card data into anything built on this.
 
 ## Real regulatory content
 
@@ -35,7 +41,7 @@ npm run typecheck:nci
 
 ## Next
 
-Persistence and tenant isolation (reuse Build 62 and 64 patterns), a review UI, then AI-assisted drafting of requirement mappings that always lands as a draft for human review.
+Wire a Postgres store to the schema (reuse Build 62 and 64 patterns), add sign-in and approval buttons to the review page, connect a real model behind `DraftingModel`, and commission an independent security test.
 
 ## Relationship to the earlier MVP
 

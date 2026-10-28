@@ -91,6 +91,32 @@ export interface Conclusion {
   at: string;
 }
 
+export interface Proposal {
+  id: string;
+  sourceId: string;
+  citation: string;
+  quote: string; // verbatim text from the source that supports the proposal
+  requirementText: string;
+  rail: Rail;
+  severity: Severity;
+  generatedBy: string; // for example "ai:model-name" or "import"
+  status: 'pending' | 'accepted' | 'rejected';
+  decidedBy?: string;
+}
+
+export interface NciSnapshot {
+  version: 1;
+  tenantId: string;
+  sources: RegulatorySource[];
+  requirements: Requirement[];
+  controls: Control[];
+  evidence: Evidence[];
+  actions: CorrectiveAction[];
+  conclusions: Conclusion[];
+  proposals: Proposal[];
+  audit: AuditEvent[];
+}
+
 export interface AuditEvent {
   seq: number;
   at: string;
@@ -124,6 +150,7 @@ export class NciEngine {
   private readonly evidence = new Map<string, Evidence>();
   private readonly actions = new Map<string, CorrectiveAction>();
   private readonly conclusions = new Map<string, Conclusion>();
+  private readonly proposals = new Map<string, Proposal>();
   private readonly audit: AuditEvent[] = [];
   private readonly clock: () => string;
 
@@ -323,6 +350,70 @@ export class NciEngine {
       actions: [...this.actions.values()].filter((a) => a.requirementId === requirementId),
       conclusion: this.conclusions.get(requirementId),
     };
+  }
+
+  // ---------- proposals (AI-assisted or imported drafts) ----------
+  /** Proposals are drafts. They create nothing until a named person accepts them. */
+  submitProposal(actor: string, p: Omit<Proposal, 'status' | 'decidedBy' | 'generatedBy'> & { generatedBy?: string }): Proposal {
+    this.mustGetSource(p.sourceId);
+    if (!p.quote.trim()) throw new NciError('a proposal must quote the source text it rests on');
+    if (this.proposals.has(p.id)) throw new NciError(`proposal ${p.id} already exists`);
+    const proposal: Proposal = { ...p, generatedBy: p.generatedBy ?? actor, status: 'pending' };
+    this.proposals.set(proposal.id, proposal);
+    this.log(actor, 'proposal.submitted', proposal.id, `${proposal.citation} (${proposal.generatedBy})`);
+    return proposal;
+  }
+
+  decideProposal(approverId: string, proposalId: string, decision: 'accepted' | 'rejected'): Proposal {
+    const p = this.proposals.get(proposalId);
+    if (!p) throw new NciError(`unknown proposal ${proposalId}`);
+    if (p.status !== 'pending') throw new NciError(`proposal ${proposalId} is already ${p.status}`);
+    if (!approverId || approverId === 'nci-engine' || approverId.startsWith('ai:')) throw new NciError('a named person must decide a proposal');
+    p.status = decision;
+    p.decidedBy = approverId;
+    if (decision === 'accepted') {
+      this.addRequirement(approverId, { id: `REQ-${p.id}`, sourceId: p.sourceId, citation: p.citation, text: p.requirementText, rail: p.rail, severity: p.severity });
+    }
+    this.log(approverId, `proposal.${decision}`, proposalId, '');
+    return p;
+  }
+
+  listProposals(status?: Proposal['status']): Proposal[] {
+    return [...this.proposals.values()].filter((p) => !status || p.status === status);
+  }
+
+  // ---------- snapshot ----------
+  toSnapshot(): NciSnapshot {
+    const copy = <T,>(m: Map<string, T>): T[] => JSON.parse(JSON.stringify([...m.values()])) as T[];
+    return {
+      version: 1,
+      tenantId: this.tenantId,
+      sources: copy(this.sources),
+      requirements: copy(this.requirements),
+      controls: copy(this.controls),
+      evidence: copy(this.evidence),
+      actions: copy(this.actions),
+      conclusions: copy(this.conclusions),
+      proposals: copy(this.proposals),
+      audit: JSON.parse(JSON.stringify(this.audit)) as AuditEvent[],
+    };
+  }
+
+  /** Rebuilds an engine from a snapshot. Fails closed if the snapshot's audit chain is broken or it belongs to another tenant. */
+  static fromSnapshot(expectedTenantId: string, s: NciSnapshot, clock?: () => string): NciEngine {
+    if (s.version !== 1) throw new NciError('unsupported snapshot version');
+    if (s.tenantId !== expectedTenantId) throw new NciError('snapshot belongs to a different tenant');
+    const engine = new NciEngine(expectedTenantId, clock);
+    if (!engine.verifyAuditChain(s.audit).ok) throw new NciError('snapshot audit chain is broken');
+    for (const x of s.sources) engine.sources.set(x.id, x);
+    for (const x of s.requirements) engine.requirements.set(x.id, x);
+    for (const x of s.controls) engine.controls.set(x.id, x);
+    for (const x of s.evidence) engine.evidence.set(x.id, x);
+    for (const x of s.actions) engine.actions.set(x.id, x);
+    for (const x of s.conclusions) engine.conclusions.set(x.requirementId, x);
+    for (const x of s.proposals) engine.proposals.set(x.id, x);
+    engine.audit.push(...s.audit);
+    return engine;
   }
 
   // ---------- audit ----------

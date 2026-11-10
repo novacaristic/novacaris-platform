@@ -51,6 +51,8 @@
     "builds/61-nova-client-case-workspace/tests/client-case-workspace.test.ts",
     "builds/62-nova-durable-workspace/src/postgres-workspace-store.ts",
     "builds/62-nova-durable-workspace/src/workspace-api.ts",
-    "builds/62-nova-durable-workspace/tests/postgres-workspace.integration.test.ts"
+    "builds/62-nova-durable-workspace/tests/postgres-workspace.integration.test.ts",
+    "builds/67-clinical-chart-api-ui/src/chart-api.ts",
+    "builds/67-clinical-chart-api-ui/tests/chart-api.integration.test.ts"
   ]
 }

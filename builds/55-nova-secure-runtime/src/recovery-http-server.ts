@@ -9,6 +9,8 @@ const MAX_BODY_BYTES = 64 * 1024;
 export interface RecoveryRuntimeOptions {
   api: RecoveryOperationsApi;
   workspaceApi?: { handle(request: ApiRequest): Promise<ApiResponse> };
+  chartApi?: { handle(request: ApiRequest): Promise<ApiResponse> };
+  chartUiPath?: string;
   uiPath?: string;
   allowedOrigin?: string;
   serviceName?: string;
@@ -68,6 +70,11 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
         send(response, 200, html, "text/html; charset=utf-8");
         return;
       }
+      if (method === "GET" && options.chartApi && (url.pathname === "/chart" || url.pathname === "/chart/")) {
+        const chartUi = options.chartUiPath ?? resolve(process.cwd(), "builds/67-clinical-chart-api-ui/ui/index.html");
+        send(response, 200, await readFile(chartUi, "utf8"), "text/html; charset=utf-8");
+        return;
+      }
       if (!url.pathname.startsWith("/api/")) { send(response, 404, { error: "ROUTE_NOT_FOUND" }); return; }
       if (!["GET", "POST"].includes(method)) {
         response.setHeader("Allow", "GET, POST");
@@ -87,7 +94,9 @@ export function createRecoveryHttpServer(options: RecoveryRuntimeOptions): Serve
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => { query[key] = value; });
       const apiRequest: ApiRequest = { method, path: url.pathname, query, body, headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : value])) };
-      const result: ApiResponse = url.pathname.startsWith("/api/workspace") && options.workspaceApi
+      const result: ApiResponse = url.pathname.startsWith("/api/chart/") || url.pathname === "/api/chart"
+        ? (options.chartApi ? await options.chartApi.handle(apiRequest) : { status: 404, body: { error: "ROUTE_NOT_FOUND" } })
+        : url.pathname.startsWith("/api/workspace") && options.workspaceApi
         ? await options.workspaceApi.handle(apiRequest)
         : await options.api.handle(apiRequest);
       send(response, result.status, result.body);

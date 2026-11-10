@@ -1,0 +1,180 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFile, readdir } from "node:fs/promises";
+import { once } from "node:events";
+import type { Server } from "node:http";
+import { Pool } from "pg";
+import { RecoveryOperationsApi } from "../../54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api";
+import { createRecoveryHttpServer } from "../../55-nova-secure-runtime/src/recovery-http-server";
+import { ChartApi, type ChartContext } from "../src/chart-api";
+
+const databaseUrl = process.env.DATABASE_URL;
+const pool = databaseUrl ? new Pool({ connectionString: databaseUrl, max: 6 }) : null;
+const uuid = () => crypto.randomUUID();
+
+// Identities are chosen by a test header standing in for a verified token.
+const T = { a: uuid(), b: uuid() };
+const U = { dr: uuid(), rn: uuid(), bht: uuid(), other: uuid() };
+const SUB: Record<string, { tenant: string; role: string }> = {};
+const caps: Record<string, string[]> = {
+  clinician: ["chart.read", "chart.note.write", "chart.note.sign", "chart.mar.administer"],
+  supervisor: ["chart.read", "chart.note.write", "chart.note.sign", "chart.mar.administer", "chart.note.cosign"],
+};
+const resolve = async (req: { headers?: Record<string, string | undefined> }): Promise<ChartContext | null> => {
+  const sub = req.headers?.["x-test-sub"];
+  if (!sub || !SUB[sub]) return null;
+  return { tenantId: SUB[sub].tenant, actor: { type: "user", reference: sub, role: SUB[sub].role }, authorizationDecisionReference: "test" };
+};
+const authorize = async (c: ChartContext, action: string) => (caps[c.actor.role] ?? []).includes(action);
+
+let server: Server; let base = ""; const origin = "http://127.0.0.1";
+const ids = { admA: uuid(), admB: uuid(), patA: uuid(), patB: uuid(), orderA: uuid(), medPrn: uuid() };
+
+async function call(sub: string | null, method: string, path: string, body?: unknown) {
+  const headers: Record<string, string> = { "Content-Type": "application/json", Origin: origin };
+  if (sub) headers["x-test-sub"] = sub;
+  const r = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  return { status: r.status, body: await r.json().catch(() => null) as any, headers: r.headers };
+}
+
+describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS enforced)", () => {
+  beforeAll(async () => {
+    const db = pool!;
+    // Apply every build in order, exactly as a deployment would.
+    const root = new URL("../../", import.meta.url);
+    const dirs = (await readdir(root)).sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
+    for (const d of dirs) {
+      let files: string[] = [];
+      try { files = (await readdir(new URL(`${d}/sql/`, root))).filter(f => /^build_.*\.sql$/.test(f)).sort(); } catch { continue; }
+      for (const f of files) await db.query(await readFile(new URL(`${d}/sql/${f}`, root), "utf8"));
+    }
+    // Seed two agencies as the database owner.
+    await db.query("INSERT INTO nova_tenants(id,tenant_key,name) VALUES ($1,$2,'Agency A'),($3,$4,'Agency B')", [T.a, "a-" + T.a, T.b, "b-" + T.b]);
+    const users: [string, string, string, string][] = [[U.dr, T.a, "sub-dr-" + U.dr, "Dr. Prescriber"], [U.rn, T.a, "sub-rn-" + U.rn, "Nurse RN"], [U.bht, T.a, "sub-bht-" + U.bht, "BHT Staff"], [U.other, T.b, "sub-other-" + U.other, "Other Agency"]];
+    for (const [id, t, sub, name] of users) await db.query("INSERT INTO nova_users(id,tenant_id,external_subject,display_name) VALUES ($1,$2,$3,$4)", [id, t, sub, name]);
+    SUB["sub-dr-" + U.dr] = { tenant: T.a, role: "supervisor" };
+    SUB["sub-rn-" + U.rn] = { tenant: T.a, role: "supervisor" };
+    SUB["sub-bht-" + U.bht] = { tenant: T.a, role: "clinician" };
+    SUB["sub-other-" + U.other] = { tenant: T.b, role: "supervisor" };
+    SUB["sub-ghost"] = { tenant: T.a, role: "supervisor" }; // valid token, no staff record
+    await db.query("INSERT INTO nova_patients(id,tenant_id) VALUES ($1,$2),($3,$4)", [ids.patA, T.a, ids.patB, T.b]);
+    await db.query(`INSERT INTO nova_resident_profiles(tenant_id,patient_id,legal_first_name,legal_last_name,date_of_birth,address_line1,allergies_reviewed)
+      VALUES ($1,$2,'Jordan','Rivera','1990-04-12','142 E Joan D Arc Ave',true),($3,$4,'Other','Resident','1985-01-01','1 Main',true)`, [T.a, ids.patA, T.b, ids.patB]);
+    await db.query(`INSERT INTO nova_admissions(id,tenant_id,patient_id,admitted_at,admitting_professional_name,admitting_professional_credential,presenting_issues)
+      VALUES ($1,$2,$3,now()-interval '1 day','Dr. Prescriber','PMHNP','Step-down'),($4,$5,$6,now(),'Doc B','MD','B')`, [ids.admA, T.a, ids.patA, ids.admB, T.b, ids.patB]);
+    // Order + verified PRN psychotropic, signed by the right people through the DB session rules.
+    const c = await db.connect();
+    try {
+      await c.query("BEGIN"); await c.query("SET LOCAL ROLE nova_app");
+      await c.query("SELECT set_config('app.tenant_id',$1,true), set_config('app.user_id',$2,true)", [T.a, U.dr]);
+      await c.query(`INSERT INTO nova_clinical_orders(id,tenant_id,patient_id,admission_id,order_kind,order_text,order_source,ordered_at,
+        issuing_practitioner_user_id,issuing_practitioner_name,issuing_practitioner_credential,authenticated_by)
+        VALUES ($1,$2,$3,$4,'medication','Hydroxyzine 25 mg PO q6h PRN anxiety','electronic',now(),$5,'Dr. Prescriber','PMHNP',$5)`, [ids.orderA, T.a, ids.patA, ids.admA, U.dr]);
+      await c.query("SELECT set_config('app.user_id',$1,true)", [U.rn]);
+      await c.query(`INSERT INTO nova_medication_orders(id,tenant_id,patient_id,admission_id,clinical_order_id,medication_name,strength,dose,route,frequency,
+        is_prn,prn_indication,prn_max_doses_per_day,is_psychotropic,start_date,authenticated_by)
+        VALUES ($1,$2,$3,$4,$5,'Hydroxyzine HCl','25 mg','25 mg','PO','q6h PRN',true,'anxiety',4,true,current_date - 1,$6)`, [ids.medPrn, T.a, ids.patA, ids.admA, ids.orderA, U.rn]);
+      await c.query("COMMIT");
+    } finally { c.release(); }
+
+    const api = new RecoveryOperationsApi(async () => null, {} as never, {} as never);
+    server = createRecoveryHttpServer({ api, chartApi: new ChartApi(db, resolve, authorize), allowedOrigin: origin });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const addr = server.address(); if (!addr || typeof addr === "string") throw new Error("NO_ADDRESS");
+    base = `http://127.0.0.1:${addr.port}`;
+  }, 60000);
+  afterAll(async () => { if (server?.listening) { server.close(); await once(server, "close"); } await pool?.end(); });
+
+  const bht = () => "sub-bht-" + U.bht, rn = () => "sub-rn-" + U.rn, other = () => "sub-other-" + U.other;
+  let noteId = ""; let adminId = "";
+
+  it("serves the chart screen with security headers", async () => {
+    const r = await fetch(base + "/chart");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(await r.text()).toContain("NovaCärïs Chart");
+  });
+
+  it("requires authentication and a provisioned staff record", async () => {
+    expect((await call(null, "GET", "/api/chart/residents")).status).toBe(401);
+    const ghost = await call("sub-ghost", "GET", "/api/chart/residents");
+    expect(ghost.status).toBe(403); expect(ghost.body.error).toBe("USER_NOT_PROVISIONED");
+  });
+
+  it("dashboard lists only the caller's own agency, with completeness", async () => {
+    const r = await call(bht(), "GET", "/api/chart/residents");
+    expect(r.status).toBe(200);
+    expect(r.body.items.map((x: any) => x.admission_id)).toEqual([ids.admA]);
+    const chart = await call(bht(), "GET", `/api/chart/admissions/${ids.admA}`);
+    expect(chart.status).toBe(200);
+    expect(chart.body.item.completeness.length).toBeGreaterThan(15);
+  });
+
+  it("note writing: draft, edit, sign, then locked; client cannot choose tenant or signer", async () => {
+    const created = await call(bht(), "POST", `/api/chart/admissions/${ids.admA}/notes`, {
+      note_type: "skills_training", service_date: new Date().toISOString().slice(0, 10), start_time: "09:00", end_time: "10:00",
+      service_code: "H2017", units: 4, narrative: "Coached resident on medication routine and weekly meal plan.", requires_cosign: true,
+      tenant_id: T.b, authenticated_by: U.dr, entered_by: U.dr,
+    });
+    expect(created.status).toBe(201); expect(created.body.item.authenticated_at).toBeNull();
+    noteId = created.body.item.id;
+    const row = await pool!.query("SELECT tenant_id, entered_by FROM nova_clinical_notes WHERE id=$1", [noteId]);
+    expect(row.rows[0]).toEqual({ tenant_id: T.a, entered_by: U.bht });
+    const notMine = await call(rn(), "POST", `/api/chart/notes/${noteId}`, { note_type: "progress", service_date: "2026-11-10", narrative: "Someone else editing this draft text." });
+    expect(notMine.status).toBe(403);
+    const edited = await call(bht(), "POST", `/api/chart/notes/${noteId}`, { note_type: "skills_training", service_date: new Date().toISOString().slice(0, 10), narrative: "Coached resident on medication routine and weekly meal plan in detail.", requires_cosign: true, service_code: "H2017", units: 4 });
+    expect(edited.status).toBe(200);
+    const signed = await call(bht(), "POST", `/api/chart/notes/${noteId}/sign`);
+    expect(signed.status).toBe(200); expect(signed.body.item.signed_at).toBeTruthy();
+    const locked = await call(bht(), "POST", `/api/chart/notes/${noteId}`, { note_type: "progress", service_date: "2026-11-10", narrative: "Trying to rewrite a signed note afterwards." });
+    expect(locked.status).toBe(409); expect(locked.body.error).toBe("CHART_LOCKED");
+  });
+
+  it("cosign is role-gated and cannot be done by the author", async () => {
+    const denied = await call(bht(), "POST", `/api/chart/notes/${noteId}/cosign`);
+    expect(denied.status).toBe(403); expect(denied.body.error).toBe("POLICY_DENIED:chart.note.cosign");
+    const ok = await call(rn(), "POST", `/api/chart/notes/${noteId}/cosign`);
+    expect(ok.status).toBe(200); expect(ok.body.item.cosigned_at).toBeTruthy();
+    const again = await call(rn(), "POST", `/api/chart/notes/${noteId}/cosign`);
+    expect(again.status).toBe(409);
+  });
+
+  it("corrections are signed addenda; the original note is unchanged", async () => {
+    const r = await call(bht(), "POST", `/api/chart/notes/${noteId}/addendum`, { amendment_type: "addendum", reason: "Clarify duration", amended_content: "Session ran the full 60 minutes." });
+    expect(r.status).toBe(201); expect(r.body.item.authenticated_at).toBeTruthy();
+    const chart = await call(bht(), "GET", `/api/chart/admissions/${ids.admA}`);
+    expect(chart.body.item.amendments.some((m: any) => m.target_id === noteId)).toBe(true);
+  });
+
+  it("MAR pass: PRN psychotropic needs a pre-assessment; name/strength come from the order; effect recorded once", async () => {
+    const missing = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN" });
+    expect(missing.status).toBe(400); expect(missing.body.error).toBe("MAR_ASSESSMENT");
+    const future = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN", pre_behavior_assessment: "Pacing", administered_at: new Date(Date.now() + 3600_000).toISOString() });
+    expect(future.status).toBe(400);
+    const given = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN", pre_behavior_assessment: "Pacing, tearful, anxiety 7/10" });
+    expect(given.status).toBe(201);
+    expect(given.body.item.medication_name).toBe("Hydroxyzine HCl"); expect(given.body.item.authenticated_at).toBeTruthy();
+    adminId = given.body.item.id;
+    const eff = await call(rn(), "POST", `/api/chart/mar/${adminId}/effect`, { effect_assessment: "Calmer after 45 min, anxiety 3/10" });
+    expect(eff.status).toBe(200); expect(eff.body.item.effect_assessed_at).toBeTruthy();
+    const again = await call(rn(), "POST", `/api/chart/mar/${adminId}/effect`, { effect_assessment: "rewrite" });
+    expect(again.status).toBe(409);
+    const mar = await call(rn(), "GET", `/api/chart/admissions/${ids.admA}/mar`);
+    expect(mar.body.item.administrations.map((x: any) => x.id)).toContain(adminId);
+  });
+
+  it("another agency cannot read, write, sign, or give meds on this chart", async () => {
+    expect((await call(other(), "GET", `/api/chart/admissions/${ids.admA}`)).status).toBe(404);
+    expect((await call(other(), "POST", `/api/chart/admissions/${ids.admA}/notes`, { note_type: "progress", service_date: "2026-11-10", narrative: "Cross-agency write attempt goes here." })).status).toBe(404);
+    expect((await call(other(), "POST", `/api/chart/notes/${noteId}/sign`)).status).toBe(404);
+    expect((await call(other(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN", pre_behavior_assessment: "x" })).status).toBe(404);
+    expect((await call(other(), "POST", `/api/chart/mar/${adminId}/effect`, { adverse_reaction: "fake" })).status).toBe(404);
+    const list = await call(other(), "GET", "/api/chart/residents");
+    expect(list.body.items.map((x: any) => x.admission_id)).toEqual([ids.admB]);
+  });
+
+  it("rejects malformed ids and cross-site posts", async () => {
+    expect((await call(bht(), "GET", "/api/chart/admissions/not-a-uuid")).status).toBe(400);
+    const r = await fetch(base + "/api/chart/mar", { method: "POST", headers: { "Content-Type": "application/json", Origin: "https://evil.example", "x-test-sub": rn() }, body: "{}" });
+    expect(r.status).toBe(403);
+  });
+});

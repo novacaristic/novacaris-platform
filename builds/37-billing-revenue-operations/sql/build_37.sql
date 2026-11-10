@@ -178,6 +178,27 @@ CREATE TABLE IF NOT EXISTS nova_billing_events (
  created_at timestamptz NOT NULL DEFAULT now()
 );
 
+
+-- RECONCILIATION (fix 2026-11-10): build_26 already created nova_subscriptions and
+-- nova_billing_events with different columns. Converge to a superset so both builds work.
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS billing_customer_id uuid REFERENCES nova_billing_customers(id);
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS subscription_key text;
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS provider_subscription_reference text;
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS trial_end timestamptz;
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end boolean NOT NULL DEFAULT false;
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE nova_subscriptions ADD COLUMN IF NOT EXISTS plan_id uuid;
+ALTER TABLE nova_subscriptions ALTER COLUMN plan_id DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_tenant_key
+ON nova_subscriptions(tenant_id,subscription_key) WHERE subscription_key IS NOT NULL;
+
+ALTER TABLE nova_billing_events ADD COLUMN IF NOT EXISTS customer_id uuid REFERENCES nova_billing_customers(id);
+ALTER TABLE nova_billing_events ADD COLUMN IF NOT EXISTS invoice_id uuid REFERENCES nova_billing_invoices(id);
+ALTER TABLE nova_billing_events ADD COLUMN IF NOT EXISTS actor_type text;
+ALTER TABLE nova_billing_events ADD COLUMN IF NOT EXISTS actor_id uuid;
+ALTER TABLE nova_billing_events ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
 CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant_status
 ON nova_subscriptions(tenant_id,status);
 

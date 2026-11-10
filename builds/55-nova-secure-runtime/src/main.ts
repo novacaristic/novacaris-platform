@@ -10,6 +10,7 @@ import { checkDatabaseReadiness, validateRuntimeConfiguration } from "../../../b
 import { ClientCaseWorkspace, type WorkspaceContext } from "../../../builds/61-nova-client-case-workspace/src/client-case-workspace";
 import { PostgresWorkspaceStore } from "../../../builds/62-nova-durable-workspace/src/postgres-workspace-store";
 import { WorkspaceApi } from "../../../builds/62-nova-durable-workspace/src/workspace-api";
+import { ChartApi, type ChartContext } from "../../../builds/67-clinical-chart-api-ui/src/chart-api";
 
 interface HostSecurityAdapter {
   resolveContext: AuthenticatedContextResolver;
@@ -46,7 +47,14 @@ async function main(): Promise<void> {
     const workspace = new ClientCaseWorkspace(workspaceStore, (context, action) => authorize(context as unknown as RequestContext, action));
     workspaceApi = new WorkspaceApi(security.resolveWorkspaceContext, workspace, (tenantId, noteId) => workspaceStore.listAudit(tenantId, noteId));
   }
-  const server = createRecoveryHttpServer({ api, workspaceApi, readiness, allowedOrigin });
+  let chartApi: ChartApi | undefined;
+  if (process.env.NOVA_CHART_ENABLED === "true") {
+    if (typeof security.resolveWorkspaceContext !== "function") throw new Error("STARTUP_BLOCKED_CHART_REQUIRES_WORKSPACE_CONTEXT");
+    chartApi = new ChartApi(pool,
+      security.resolveWorkspaceContext as unknown as (r: { method: string; path: string }) => Promise<ChartContext | null>,
+      (context, action) => authorize(context as unknown as RequestContext, action));
+  }
+  const server = createRecoveryHttpServer({ api, workspaceApi, chartApi, readiness, allowedOrigin });
   server.listen(port, process.env.HOST ?? "0.0.0.0", () => process.stdout.write(`nova_recovery_runtime_listening port=${port}\n`));
   const shutdown = (signal: string) => {
     process.stdout.write(`nova_recovery_runtime_shutdown signal=${signal}\n`);

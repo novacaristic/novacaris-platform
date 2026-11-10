@@ -44,6 +44,21 @@ CREATE TABLE IF NOT EXISTS nova_privacy_holds (
  released_by uuid REFERENCES nova_users(id)
 );
 
+-- RECONCILIATION (fix 2026-11-10): build_01 already created nova_privacy_holds with a
+-- patient-scoped shape. Converge both shapes so either build's inserts work.
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS subject_type text;
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS subject_id uuid;
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS hold_type text;
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS created_by uuid REFERENCES nova_users(id);
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS released_by uuid REFERENCES nova_users(id);
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS patient_id uuid REFERENCES nova_patients(id);
+ALTER TABLE nova_privacy_holds ADD COLUMN IF NOT EXISTS placed_by uuid REFERENCES nova_users(id);
+ALTER TABLE nova_privacy_holds ALTER COLUMN patient_id DROP NOT NULL;
+ALTER TABLE nova_privacy_holds ALTER COLUMN placed_by DROP NOT NULL;
+UPDATE nova_privacy_holds SET subject_type='patient', subject_id=patient_id WHERE subject_type IS NULL AND patient_id IS NOT NULL;
+
+
 CREATE TABLE IF NOT EXISTS nova_break_glass_events (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  tenant_id uuid NOT NULL REFERENCES nova_tenants(id),

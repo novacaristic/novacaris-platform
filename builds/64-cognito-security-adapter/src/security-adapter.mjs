@@ -67,9 +67,9 @@ function permissions(claims) {
   return typeof value === "string" ? value.split(",").map(v => v.trim()).filter(Boolean) : [];
 }
 const roleCapabilities = {
-  clinician: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit"]),
-  supervisor: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","workspace.note.approve","workspace.note.request_changes"]),
-  administrator: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","workspace.note.approve","workspace.note.request_changes","recovery.read","recovery.escalation.open","recovery.escalation.acknowledge","recovery.escalation.assign","recovery.escalation.resolve","recovery.execution.review","agent.manage","agent.delegate"]),
+  clinician: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","chart.read","chart.note.write","chart.note.sign","chart.mar.administer"]),
+  supervisor: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","workspace.note.approve","workspace.note.request_changes","chart.read","chart.note.write","chart.note.sign","chart.mar.administer","chart.note.cosign"]),
+  administrator: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","workspace.note.approve","workspace.note.request_changes","chart.read","chart.note.write","chart.note.sign","chart.mar.administer","chart.note.cosign","recovery.read","recovery.escalation.open","recovery.escalation.acknowledge","recovery.escalation.assign","recovery.escalation.resolve","recovery.execution.review","agent.manage","agent.delegate"]),
   owner: new Set(["workspace.note.create","workspace.note.check","workspace.note.submit","agent.manage","agent.delegate"]),
   agent: new Set([])
 };

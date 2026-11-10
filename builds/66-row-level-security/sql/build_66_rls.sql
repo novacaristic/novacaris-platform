@@ -181,8 +181,19 @@ BEGIN
     INSERT INTO nova_rls_coverage VALUES (t.relname, 'P', 'platform/operator only (service role)');
   END LOOP;
 
-  EXECUTE format('GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO %s', app_roles);
-  EXECUTE format('REVOKE ALL ON SEQUENCE nova_chart_audit_id_seq FROM %s', app_roles);
+  -- sequences: only those owned by tables app users may insert into (no row-count leaks)
+  FOR t IN SELECT seq.relname AS seqname, tbl.relname AS tblname
+           FROM pg_class seq JOIN pg_namespace n ON n.oid = seq.relnamespace
+           JOIN pg_depend d ON d.objid = seq.oid AND d.deptype IN ('a','i')
+           JOIN pg_class tbl ON tbl.oid = d.refobjid
+           WHERE n.nspname = 'public' AND seq.relkind = 'S' LOOP
+    IF t.tblname IN (SELECT table_name FROM nova_rls_coverage WHERE tier IN ('A','B'))
+       AND t.tblname NOT IN (SELECT table_name FROM nova_rls_readonly_tables) AND t.tblname <> 'nova_chart_audit' THEN
+      EXECUTE format('GRANT USAGE ON SEQUENCE %I TO %s', t.seqname, app_roles);
+    ELSE
+      EXECUTE format('REVOKE ALL ON SEQUENCE %I FROM %s', t.seqname, app_roles);
+    END IF;
+  END LOOP;
   -- functions: nothing for PUBLIC; app roles get only what they need (C10)
   REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
   EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO %s', app_roles);

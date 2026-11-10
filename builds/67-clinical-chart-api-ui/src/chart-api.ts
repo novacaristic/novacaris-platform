@@ -96,7 +96,6 @@ export function mapError(e: unknown): ChartResponse {
   if (err?.code === "23514" || err?.code === "23502") return { status: 400, body: { error: "VALIDATION_FAILED" } };
   if (err?.code === "23503") return { status: 400, body: { error: "REFERENCE_INVALID" } };
   if (err?.code === "22P02" || err?.code === "22007" || err?.code === "22008") return { status: 400, body: { error: "VALUE_INVALID" } };
-  if (process.env.NOVA_DEBUG_ERRORS === "1") console.error("chart_api_500", e);
   return { status: 500, body: { error: "INTERNAL_SERVER_ERROR" } };
 }
 
@@ -142,7 +141,7 @@ export class ChartApi {
   static async assertSafeConnection(pool: Pool, allowPrivileged = process.env.NOVA_ALLOW_PRIVILEGED_DB_LOGIN === "true"): Promise<void> {
     const r = await pool.query(`SELECT r.rolsuper, r.rolbypassrls, r.rolname,
         EXISTS (SELECT 1 FROM pg_roles a WHERE a.rolname = 'authenticated' AND pg_has_role(r.oid, a.oid, 'MEMBER')) AS can_become_authenticated,
-        EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relowner = r.oid) AS owns_tables
+        EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND pg_has_role(r.oid, c.relowner, 'MEMBER')) AS owns_tables
       FROM pg_roles r WHERE r.rolname = session_user`);
     const row = r.rows[0] ?? {};
     const problems = [

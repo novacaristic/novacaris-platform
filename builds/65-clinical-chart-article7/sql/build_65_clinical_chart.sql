@@ -707,9 +707,13 @@ CREATE TABLE IF NOT EXISTS nova_medication_orders (
  created_at timestamptz NOT NULL DEFAULT now(),
  authenticated_by uuid REFERENCES nova_users(id),        -- transcription verified by
  authenticated_at timestamptz,
- CHECK (NOT is_prn OR prn_indication IS NOT NULL)
+ CHECK (NOT is_prn OR prn_indication IS NOT NULL),
+ CONSTRAINT nova_medication_orders_stop_after_start CHECK (stop_date IS NULL OR stop_date >= start_date)
 );
 
+DO $c$ BEGIN
+  ALTER TABLE nova_medication_orders ADD CONSTRAINT nova_medication_orders_stop_after_start CHECK (stop_date IS NULL OR stop_date >= start_date);
+EXCEPTION WHEN duplicate_object THEN NULL; END $c$;
 ALTER TABLE nova_medication_orders ADD COLUMN IF NOT EXISTS status_changed_by uuid REFERENCES nova_users(id);
 ALTER TABLE nova_medication_orders ADD COLUMN IF NOT EXISTS status_changed_at timestamptz;
 ALTER TABLE nova_clinical_orders ADD COLUMN IF NOT EXISTS discontinued_by uuid REFERENCES nova_users(id);
@@ -786,6 +790,15 @@ BEGIN
     RAISE EXCEPTION 'MAR_OUTSIDE_ORDER_DATES: order runs % to %', o.start_date, COALESCE(o.stop_date::text,'open');
   END IF;
 
+  IF NEW.scheduled_for IS NOT NULL THEN
+    IF o.is_prn THEN RAISE EXCEPTION 'MAR_SCHEDULE: PRN doses have no scheduled time'; END IF;
+    IF abs(extract(epoch FROM (NEW.administered_at - NEW.scheduled_for))) > 12 * 3600 THEN
+      RAISE EXCEPTION 'MAR_SCHEDULE: scheduled time must be within 12 hours of the administration';
+    END IF;
+    IF NOT (to_char(NEW.scheduled_for AT TIME ZONE tz, 'HH24:MI') = ANY (SELECT to_char(t, 'HH24:MI') FROM unnest(o.scheduled_times) t)) THEN
+      RAISE EXCEPTION 'MAR_SCHEDULE: scheduled time is not one of this order''s times';
+    END IF;
+  END IF;
   is_given := NEW.outcome IN ('given','self_administered_with_assistance');
   -- what was given comes from the verified order, never free text
   NEW.medication_name := o.medication_name; NEW.strength := o.strength;
@@ -822,9 +835,10 @@ BEGIN
     IF o.is_prn AND o.prn_max_doses_per_day IS NOT NULL THEN
       SELECT count(*) INTO given_today FROM nova_medication_administrations m
        WHERE m.medication_order_id = o.id AND m.outcome IN ('given','self_administered_with_assistance')
-         AND (m.administered_at AT TIME ZONE tz)::date = (NEW.administered_at AT TIME ZONE tz)::date;
+         AND m.administered_at > NEW.administered_at - interval '24 hours'
+         AND m.administered_at < NEW.administered_at + interval '24 hours';
       IF given_today >= o.prn_max_doses_per_day THEN
-        RAISE EXCEPTION 'MAR_PRN_DAILY_MAX: % of % PRN doses already given that day', given_today, o.prn_max_doses_per_day;
+        RAISE EXCEPTION 'MAR_PRN_DAILY_MAX: % of % PRN doses already given within 24 hours', given_today, o.prn_max_doses_per_day;
       END IF;
     END IF;
   END IF;
@@ -867,9 +881,11 @@ BEGIN
     END IF;
   ELSE
     NEW.status_changed_by := OLD.status_changed_by; NEW.status_changed_at := OLD.status_changed_at;
-    IF NEW.stop_date IS DISTINCT FROM OLD.stop_date AND OLD.authenticated_at IS NOT NULL
-       AND NOT (COALESCE((nova_staff(nova_current_user())).may_verify_orders, false) OR COALESCE((nova_staff(nova_current_user())).may_prescribe, false)) THEN
-      RAISE EXCEPTION 'MEDORDER_NOT_PERMITTED: only prescribers or order-verifying staff can set a stop date';
+    IF NEW.stop_date IS DISTINCT FROM OLD.stop_date AND OLD.authenticated_at IS NOT NULL THEN
+      IF NOT (COALESCE((nova_staff(nova_current_user())).may_verify_orders, false) OR COALESCE((nova_staff(nova_current_user())).may_prescribe, false)) THEN
+        RAISE EXCEPTION 'MEDORDER_NOT_PERMITTED: only prescribers or order-verifying staff can set a stop date';
+      END IF;
+      NEW.status_changed_by := nova_current_user(); NEW.status_changed_at := now();
     END IF;
   END IF;
   RETURN NEW;

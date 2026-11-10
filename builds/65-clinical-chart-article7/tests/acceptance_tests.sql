@@ -399,6 +399,11 @@ UPDATE nova_medication_orders SET status='active' WHERE id='a7000000-0000-0000-0
 UPDATE nova_medication_orders SET status_changed_by='a1000000-0000-0000-0000-000000000001', status_changed_at='2020-01-01' WHERE id='a7000000-0000-0000-0000-000000000001';
 SELECT t_ok('N2.4 status-change attribution cannot be forged (attempt is ignored)',
   (SELECT status_changed_by='a1000000-0000-0000-0000-000000000002' AND status_changed_at > now() - interval '1 hour' FROM nova_medication_orders WHERE id='a7000000-0000-0000-0000-000000000001'));
+SELECT t_err('L1.1 a stop date cannot be before the start date',
+  $q$UPDATE nova_medication_orders SET stop_date='1999-01-01' WHERE id='a7000000-0000-0000-0000-000000000001'$q$, 'stop_after_start');
+SELECT t_err('Sb.1 PRN doses cannot claim a scheduled time',
+  $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,scheduled_for,administered_at,outcome,medication_name,strength,dose_given,route,pre_behavior_assessment,administered_by_name,professional_designation,authenticated_by)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','a7000000-0000-0000-0000-000000000001','1999-01-01',now(),'given','x','x','25','PO','x','x','x','a1000000-0000-0000-0000-000000000002')$q$, 'MAR_SCHEDULE');
 SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000001'); -- Dr
 SELECT t_err('R8.2 discharge attestation cannot be forged',
   $q$UPDATE nova_admissions SET discharge_authenticated_by='a1000000-0000-0000-0000-000000000002' WHERE id='a4000000-0000-0000-0000-000000000001'$q$, 'DISCHARGE_FORGED');

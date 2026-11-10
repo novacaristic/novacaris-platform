@@ -6,6 +6,7 @@ import { Pool } from "pg";
 import { RecoveryOperationsApi } from "../../54-nova-recovery-operations-dashboard-ui/src/recovery-operations-api";
 import { createRecoveryHttpServer } from "../../55-nova-secure-runtime/src/recovery-http-server";
 import { ChartApi, type ChartContext } from "../src/chart-api";
+import { DocumentationAgent, ReferenceProvider, type DraftProvider } from "../../68-novaclerk-documentation-agent/src/agent";
 
 const databaseUrl = process.env.DATABASE_URL;
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl, max: 6 }) : null;
@@ -245,6 +246,67 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     const results = await Promise.all([give(), give(), give(), give()]);
     expect(results.filter(r => r.status === 201)).toHaveLength(1);
     expect(results.filter(r => r.body?.error === "MAR_PRN_DAILY_MAX")).toHaveLength(3);
+  });
+
+  // ------------------------------------------------------------ NovaClerk (Build 68)
+  const today = () => new Date().toISOString().slice(0, 10);
+  it("NovaClerk drafts an unsigned AI note with provenance; a clean draft can be signed by its author", async () => {
+    const r = await call(bht(), "POST", `/api/chart/admissions/${ids.admA}/notes/assist`, { note_type: "skills_training", service_date: today(),
+      source: "Coached resident on making a grocery list for the week. Resident completed the list with two prompts. Will go shopping with him on Saturday." });
+    expect(r.status).toBe(201);
+    expect(r.body.item.guard.status).toBe("clean");
+    const id = r.body.item.id;
+    const row = await pool!.query("SELECT ai_drafted, authenticated_at, entered_by, ai_guard_status FROM nova_clinical_notes WHERE id=$1", [id]);
+    expect(row.rows[0]).toMatchObject({ ai_drafted: true, authenticated_at: null, entered_by: U.bht, ai_guard_status: "clean" });
+    const why = await call(bht(), "GET", `/api/chart/notes/${id}/ai`);
+    expect(why.status).toBe(200);
+    expect(why.body.item.provenance.every((p: any) => p.class === "SOURCE_FACT")).toBe(true);
+    expect(why.body.item.source_text).toContain("grocery list");
+    const signed = await call(bht(), "POST", `/api/chart/notes/${id}/sign`);
+    expect(signed.status).toBe(200);
+  });
+
+  it("a flagged AI draft cannot be signed until its author reviews the flags; nobody else can review them", async () => {
+    class InventingModel implements DraftProvider { name = "test-inventing"; model = "test"; ref = new ReferenceProvider();
+      async draft(req: any) { const d = await this.ref.draft(req); d.narrative += " Vitals were 132/84."; return d; } }
+    const api = new ChartApi(pool!, resolve, authorize, { contextSecret: SECRET, documentationAgent: new DocumentationAgent(new InventingModel()) });
+    const ask = (sub: string, method: string, path: string, body?: unknown) => api.handle({ method, path, body, headers: { "x-test-sub": sub } }) as Promise<{ status: number; body: any }>;
+    const r = await ask(bht(), "POST", `/api/chart/admissions/${ids.admA}/notes/assist`, { note_type: "progress", service_date: today(),
+      source: "Checked in with resident after dinner. Resident said the day went fine. Will check in again tomorrow." });
+    expect(r.status).toBe(201);
+    expect(r.body.item.guard.status).toBe("blocked");
+    expect(r.body.item.guard.flags.map((f: any) => f.code)).toContain("INVENTED_NUMBER");
+    const id = r.body.item.id;
+    const early = await ask(bht(), "POST", `/api/chart/notes/${id}/sign`);
+    expect(early.status).toBe(409); expect(early.body.error).toBe("AI_REVIEW_REQUIRED");
+    const otherAck = await ask(rn(), "POST", `/api/chart/notes/${id}/acknowledge-ai`);
+    expect(otherAck.status).toBe(403); expect(otherAck.body.error).toBe("AI_ACK_NOT_AUTHOR");
+    const ack = await ask(bht(), "POST", `/api/chart/notes/${id}/acknowledge-ai`);
+    expect(ack.status).toBe(200); expect(ack.body.item.ai_flags_acknowledged_at).toBeTruthy();
+    expect((await ask(bht(), "POST", `/api/chart/notes/${id}/sign`)).status).toBe(200);
+  });
+
+  it("an AI-drafted note can't be passed off as human-written, or signed without a stored AI review", async () => {
+    const made = await call(bht(), "POST", `/api/chart/admissions/${ids.admA}/notes`, { note_type: "progress", service_date: today(),
+      narrative: "Claimed AI draft created without going through NovaClerk.", ai_drafted: true });
+    expect(made.status).toBe(201);
+    const sign = await call(bht(), "POST", `/api/chart/notes/${made.body.item.id}/sign`);
+    expect(sign.status).toBe(409); expect(sign.body.error).toBe("AI_REVIEW_REQUIRED");
+    const unflag = await call(bht(), "POST", `/api/chart/notes/${made.body.item.id}`, { note_type: "progress", service_date: today(),
+      narrative: "Claimed AI draft created without going through NovaClerk.", ai_drafted: false });
+    expect(unflag.status).toBe(409); expect(unflag.body.error).toBe("AI_FLAG_LOCKED");
+  });
+
+  it("AI draft records are append-only and isolated to the agency", async () => {
+    const run = await pool!.query("SELECT id, note_id FROM nova_ai_draft_runs WHERE tenant_id=$1 LIMIT 1", [T.a]);
+    const c = await pool!.connect(); const api = new ChartApi(pool!, resolve, authorize, { contextSecret: SECRET });
+    try {
+      await c.query("BEGIN"); await c.query("SET LOCAL ROLE nova_app");
+      await c.query("SELECT set_config('app.ctx',$1,true)", [api.signContext(T.a, U.bht)]);
+      await expect(c.query("UPDATE nova_ai_draft_runs SET guard_status='clean' WHERE id=$1", [run.rows[0].id])).rejects.toThrow(/AI_RUN_APPEND_ONLY/);
+    } finally { await c.query("ROLLBACK").catch(() => {}); c.release(); }
+    expect((await call(other(), "GET", `/api/chart/notes/${run.rows[0].note_id}/ai`)).status).toBe(404);
+    expect((await call(other(), "POST", `/api/chart/admissions/${ids.admA}/notes/assist`, { note_type: "progress", service_date: today(), source: "Cross-agency attempt to draft a note here." })).status).toBe(404);
   });
 
   it("another agency cannot read, write, sign, or give meds on this chart", async () => {

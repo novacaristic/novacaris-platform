@@ -53,6 +53,12 @@
     "builds/62-nova-durable-workspace/src/workspace-api.ts",
     "builds/62-nova-durable-workspace/tests/postgres-workspace.integration.test.ts",
     "builds/67-clinical-chart-api-ui/src/chart-api.ts",
-    "builds/67-clinical-chart-api-ui/tests/chart-api.integration.test.ts"
+    "builds/67-clinical-chart-api-ui/tests/chart-api.integration.test.ts",
+    "builds/68-novaclerk-documentation-agent/src/agent.ts",
+    "builds/68-novaclerk-documentation-agent/src/guard.ts",
+    "builds/68-novaclerk-documentation-agent/src/harness.ts",
+    "builds/68-novaclerk-documentation-agent/tests/harness-cases.ts",
+    "builds/68-novaclerk-documentation-agent/tests/harness.test.ts",
+    "builds/68-novaclerk-documentation-agent/tests/harness-catches-bad-model.test.ts"
   ]
 }

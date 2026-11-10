@@ -103,6 +103,11 @@ const FRIENDLY = {
   MAR_PRN_DAILY_MAX:"The PRN daily maximum has already been reached.",
   MAR_OUTSIDE_ORDER_DATES:"This order isn't active on that date.",
   AMENDMENT_NOT_AUTHOR:"Only the author or a supervisor can correct or void a record.",
+  AI_REVIEW_REQUIRED:"Review the NovaClerk flags (and mark them reviewed) before signing.",
+  AI_ACK_NOT_AUTHOR:"Only the author can mark the AI flags as reviewed.",
+  AI_FLAG_LOCKED:"An AI-drafted note stays marked as AI-drafted.",
+  SOURCE_TOO_SHORT:"Write a few more words for NovaClerk to work from.",
+  AI_PROVIDER_BLOCKED_NO_BAA:"The AI model isn't enabled (no business associate agreement on file).",
   AUTHENTICATION_REQUIRED:"Please sign in."
 };
 function explain(err){
@@ -195,6 +200,8 @@ function noteStatus(n){
   out.push(n.authenticated_at ? h("span",{class:"chip ok"},"Signed "+fmtDT(n.authenticated_at)) : h("span",{class:"chip warn"},"Draft"));
   if (n.requires_cosign) out.push(n.cosigned_at ? h("span",{class:"chip ok"},`Cosigned · ${n.cosigner_name||""}`) : h("span",{class:"chip warn"},"Awaiting cosign"));
   if (n.ai_drafted) out.push(h("span",{class:"chip ai"},"AI-drafted"));
+  if (n.ai_drafted && n.ai_guard_status) out.push(n.ai_flags_acknowledged_at ? h("span",{class:"chip ok"},"AI flags reviewed")
+    : h("span",{class:"chip "+({clean:"ok",review_required:"warn",blocked:"bad"}[n.ai_guard_status]||"")}, {clean:"AI check: clean",review_required:"AI check: review",blocked:"AI check: flagged"}[n.ai_guard_status]||n.ai_guard_status));
   if (n.late_entry) out.push(h("span",{class:"chip bad"},"Late entry"));
   return out;
 }
@@ -203,6 +210,7 @@ function viewNotes(){
   const amendBy = {}; for (const m of S.chart.amendments) (amendBy[m.target_id] ||= []).push(m);
   return h("div",{},
     h("div",{class:"row",style:"margin-bottom:12px"}, h("button",{class:"btn primary",onclick:()=>noteDialog()},"New note"),
+      h("button",{class:"btn",onclick:()=>assistDialog()},"Draft with NovaClerk"),
       h("span",{class:"dim small"},"Signing locks a note. Corrections are added as signed addenda.")),
     notes.length ? notes.map(n => h("div",{class:"card"},
       h("div",{class:"row"}, h("b",{}, n.note_type.replace(/_/g," ")), h("span",{class:"dim small"}, `${fmtD(n.service_date)}${n.start_time?` · ${n.start_time.slice(0,5)}–${(n.end_time||"").slice(0,5)}`:""}${n.service_code?` · ${n.service_code}${n.units?` ×${n.units}`:""}`:""} · ${n.author_name||"staff"}`), ...noteStatus(n)),
@@ -212,6 +220,9 @@ function viewNotes(){
         n.plan_next_steps ? h("p",{}, h("span",{class:"lbl"},"Plan"), n.plan_next_steps) : null),
       (amendBy[n.id]||[]).map(m => h("div",{class:"amend small"}, h("b",{}, m.amendment_type.replace(/_/g," ")), ` · ${m.author_name||""} · ${fmtDT(m.created_at)} — ${m.reason}`, h("div",{}, m.amended_content))),
       h("div",{class:"row",style:"margin-top:8px"},
+        n.ai_drafted ? h("button",{class:"btn",onclick:()=>aiDialog(n)},"Why am I seeing this?") : null,
+        !n.authenticated_at && n.mine && n.ai_drafted && ["review_required","blocked"].includes(n.ai_guard_status) && !n.ai_flags_acknowledged_at
+          ? h("button",{class:"btn",onclick:()=>acknowledgeAi(n)},"I've reviewed the AI flags") : null,
         !n.authenticated_at && n.mine ? h("button",{class:"btn",onclick:()=>noteDialog(n)},"Edit draft") : null,
         !n.authenticated_at && n.mine ? h("button",{class:"btn primary",onclick:()=>signNote(n)},"Sign") : null,
         n.authenticated_at && n.requires_cosign && !n.cosigned_at && !n.mine ? h("button",{class:"btn primary",onclick:()=>cosign(n)},"Cosign") : null,
@@ -270,6 +281,63 @@ async function signNote(n){
 async function cosign(n){
   if (!confirm("Cosign this note as the supervising staff member?")) return;
   try { await post(`/api/chart/notes/${n.id}/cosign`); toast("Cosigned."); refresh(); } catch(e){ toast(explain(e)); }
+}
+// ---------------------------------------------------------------- NovaClerk
+const FLAG_TEXT = {INVENTED_NUMBER:"Number not in your notes",INVENTED_MEDICATION:"Medication not in your notes",ALTERED_QUOTE:"Quote changed",
+  NEGATION_CHANGED:"A negative was changed",INVENTED_RISK:"Risk event not in your notes",HEDGE_REMOVED:"Uncertainty removed",UNSUPPORTED_STATEMENT:"Not clearly in your notes"};
+const CLASS_TEXT = {SOURCE_FACT:["ok","From your notes"],TRANSFORMED:["warn","Reworded"],SUGGESTED:["bad","Suggested — check it"]};
+function flagList(flags){
+  if (!flags.length) return h("p",{class:"small",style:"color:var(--ok)"},"No problems found: every sentence matches your notes.");
+  return h("div",{}, flags.map(f => h("div",{class:"card small",style:"margin:6px 0;border-left:4px solid "+(f.severity==="block"?"var(--bad)":"var(--warn)")},
+    h("b",{}, FLAG_TEXT[f.code]||f.code), h("span",{class:"dim"}," · "+f.field.replace(/_/g," ")), h("div",{}, "“"+f.sentence+"”"), h("div",{class:"dim"}, f.detail))));
+}
+function assistDialog(){
+  const d = $("#dlg");
+  const types = ["progress","shift","individual_counseling","group_counseling","nursing","case_management","skills_training","health_service","contact","other"];
+  const src = h("textarea",{style:"min-height:150px",placeholder:"In your own words: what you did, how the resident responded, and what's next. NovaClerk only uses what you write here."});
+  const type = h("select",{}, types.map(t => h("option",{value:t}, t.replace(/_/g," "))));
+  const date = h("input",{type:"date",value:new Date().toISOString().slice(0,10)});
+  const start = h("input",{type:"time"}), end = h("input",{type:"time"}), code = h("input",{placeholder:"e.g. H2017"}), units = h("input",{type:"number",min:"0",step:"0.25"});
+  const out = h("div",{});
+  const go = async (btn) => {
+    if (src.value.trim().length < 15) return toast("Write a few sentences first.");
+    btn.disabled = true; btn.textContent = "Drafting…";
+    try {
+      const r = (await post(`/api/chart/admissions/${S.admissionId}/notes/assist`, { source:src.value, note_type:type.value, service_date:date.value,
+        start_time:start.value||null, end_time:end.value||null, service_code:code.value, units:units.value===""?null:Number(units.value) })).item;
+      fill(out, h("h3",{style:"margin-top:14px"}, {clean:"Draft ready — no problems found",review_required:"Draft ready — please review",blocked:"Draft saved — NovaClerk flagged problems"}[r.guard.status]),
+        flagList(r.guard.flags),
+        r.coach.length ? h("div",{class:"small"}, h("b",{},"Still needed: "), r.coach.map(x=>x.message).join(" ")) : null,
+        h("p",{class:"dim small"},"The draft is in your notes list. Edit it, review any flags, then sign it yourself. NovaClerk never signs."));
+      btn.textContent = "Done"; refresh();
+    } catch(e){ toast(explain(e)); btn.disabled = false; btn.textContent = "Draft it"; }
+  };
+  const goBtn = h("button",{class:"btn primary",onclick:e=>go(e.currentTarget)},"Draft it");
+  fill(d, h("h3",{},"Draft with NovaClerk"),
+    h("p",{class:"dim small"},"There is a human behind the machine: NovaClerk drafts, you decide and sign."),
+    field("Your notes",src), h("div",{class:"grid"}, field("Type",type), field("Service date",date), field("Start",start), field("End",end), field("Service code",code), field("Units",units)),
+    out, h("div",{class:"row",style:"margin-top:12px;justify-content:flex-end"}, h("button",{class:"btn",onclick:()=>d.close()},"Close"), goBtn));
+  d.showModal();
+}
+async function aiDialog(n){
+  const d = $("#dlg");
+  try {
+    const r = (await api(`/api/chart/notes/${n.id}/ai`)).item;
+    fill(d, h("h3",{},"Why am I seeing this?"),
+      h("p",{class:"dim small"}, `Drafted by NovaClerk (${r.provider}${r.model?" · "+r.model:""}) on ${fmtDT(r.created_at)}. Every sentence is checked against your original notes.`),
+      r.ai_flags_acknowledged_at ? h("p",{class:"small",style:"color:var(--ok)"}, `Flags reviewed by ${r.acknowledged_by_name||"the author"} on ${fmtDT(r.ai_flags_acknowledged_at)}.`) : null,
+      h("h3",{style:"font-size:14px"},"What NovaClerk flagged"), flagList(r.guard_flags),
+      h("h3",{style:"font-size:14px"},"Where each sentence came from"),
+      h("table",{}, h("tbody",{}, r.provenance.map(p => { const [cls,label] = CLASS_TEXT[p.class]||["",p.class];
+        return h("tr",{}, h("td",{}, h("span",{class:"chip "+cls}, label)), h("td",{class:"small"}, p.sentence)); }))),
+      h("details",{style:"margin-top:10px"}, h("summary",{class:"small"},"Your original notes"), h("p",{class:"small",style:"white-space:pre-wrap"}, r.source_text)),
+      h("div",{class:"row",style:"margin-top:12px;justify-content:flex-end"}, h("button",{class:"btn",onclick:()=>d.close()},"Close")));
+    d.showModal();
+  } catch(e){ toast(explain(e)); }
+}
+async function acknowledgeAi(n){
+  if (!confirm("Confirm you have read every NovaClerk flag on this draft and corrected or accepted each one.")) return;
+  try { await post(`/api/chart/notes/${n.id}/acknowledge-ai`); toast("AI flags marked as reviewed. You can sign when ready."); refresh(); } catch(e){ toast(explain(e)); }
 }
 function addendumDialog(n){
   const d = $("#dlg");

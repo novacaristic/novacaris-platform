@@ -73,9 +73,10 @@ CREATE TABLE IF NOT EXISTS nova_rls_coverage (
  policy_basis text,
  applied_at timestamptz NOT NULL DEFAULT now()
 );
-TRUNCATE nova_rls_coverage;
 
-DO $rls$
+-- Reusable: later builds that add tables call SELECT nova_apply_rls(); at their end.
+CREATE OR REPLACE FUNCTION nova_apply_rls() RETURNS void
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $rls$
 DECLARE
   t record; pol record; tname text;
   app_roles text := 'nova_app';
@@ -84,6 +85,7 @@ DECLARE
   changed boolean := true;
   chosen record;
 BEGIN
+  TRUNCATE nova_rls_coverage;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
     app_roles := app_roles || ', authenticated';
   END IF;
@@ -216,14 +218,13 @@ BEGIN
   EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());
   EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM %s', current_database(), app_roles);
   REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-END $rls$;
-
--- Views must run with the caller's rights so RLS applies through them
-DO $views$
-DECLARE v record;
-BEGIN
-  FOR v IN SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  -- views run with the caller's rights so RLS applies through them
+  FOR t IN SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
            WHERE n.nspname = 'public' AND c.relkind = 'v' LOOP
-    EXECUTE format('ALTER VIEW %I SET (security_invoker = true)', v.relname);
+    EXECUTE format('ALTER VIEW %I SET (security_invoker = true)', t.relname);
   END LOOP;
-END $views$;
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION nova_apply_rls() FROM %s', app_roles);
+END $rls$;
+REVOKE ALL ON FUNCTION nova_apply_rls() FROM PUBLIC;
+SELECT nova_apply_rls();
+

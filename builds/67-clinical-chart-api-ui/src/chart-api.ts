@@ -13,6 +13,7 @@
 //    signatures and timestamps are always set server-side.
 import type { Pool, PoolClient } from "pg";
 import { createHmac } from "node:crypto";
+import { DocumentationAgent, providerFromEnv, AgentError } from "../../68-novaclerk-documentation-agent/src/agent";
 
 export interface ChartContext {
   tenantId: string;
@@ -78,17 +79,18 @@ function id(v: string | undefined): string {
 }
 
 // Map database errors to safe API errors. Only our own raised codes pass through.
-const KNOWN = /^(NOTE_GOAL_INVALID|ORDER_[A-Z_]+|CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|SIGNATURE_NOT_OWN|SIGN_NOT_AUTHOR|NOT_AUTHOR|NOT_SIGNABLE|NO_SESSION_USER|COSIGN_[A-Z_]+|ORDER_AUTH[A-Z_]*|MAR_[A-Z_]+|MEDORDER_[A-Z_]+|AMENDMENT_[A-Z_]+|WRONG_RESIDENT|DISCHARGE_[A-Z_]+|ADMISSION_NOT_FOUND_OR_NOT_VISIBLE)\b/;
+const KNOWN = /^(AI_[A-Z_]+|NOTE_GOAL_INVALID|ORDER_[A-Z_]+|CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|SIGNATURE_NOT_OWN|SIGN_NOT_AUTHOR|NOT_AUTHOR|NOT_SIGNABLE|NO_SESSION_USER|COSIGN_[A-Z_]+|ORDER_AUTH[A-Z_]*|MAR_[A-Z_]+|MEDORDER_[A-Z_]+|AMENDMENT_[A-Z_]+|WRONG_RESIDENT|DISCHARGE_[A-Z_]+|ADMISSION_NOT_FOUND_OR_NOT_VISIBLE)\b/;
 export function mapError(e: unknown): ChartResponse {
   if (e instanceof ChartError) return { status: e.status, body: { error: e.code } };
+  if (e instanceof AgentError) return { status: /PROVIDER/.test(e.code) ? 503 : 400, body: { error: e.code } };
   const err = e as { message?: string; code?: string };
   const msg = typeof err?.message === "string" ? err.message : "";
   const m = msg.match(KNOWN);
   if (m) {
     const code = m[1];
-    const status = /SIGNATURE_NOT_OWN|ORDER_AUTH|COSIGN_SELF|COSIGN_NOT_SUPERVISOR|NOT_AUTHOR|MAR_NOT_PERMITTED|MEDORDER_NOT_PERMITTED|AMENDMENT_NOT_AUTHOR|DISCHARGE_NOT_PERMITTED|ORDER_DISCONTINUE_NOT_PERMITTED/.test(code) ? 403
+    const status = /SIGNATURE_NOT_OWN|ORDER_AUTH|COSIGN_SELF|COSIGN_NOT_SUPERVISOR|NOT_AUTHOR|MAR_NOT_PERMITTED|MEDORDER_NOT_PERMITTED|AMENDMENT_NOT_AUTHOR|DISCHARGE_NOT_PERMITTED|ORDER_DISCONTINUE_NOT_PERMITTED|AI_ACK_NOT_AUTHOR/.test(code) ? 403
       : /NOT_FOUND|NOT_SIGNABLE/.test(code) ? 404
-      : /CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|COSIGN_BEFORE_SIGN|COSIGN_FORGED|MAR_PRN_DAILY_MAX/.test(code) ? 409
+      : /CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|COSIGN_BEFORE_SIGN|COSIGN_FORGED|MAR_PRN_DAILY_MAX|AI_REVIEW_REQUIRED|AI_FLAG_LOCKED|AI_ACK_FORGED/.test(code) ? 409
       : 400;
     return { status, body: { error: code } };
   }
@@ -99,13 +101,14 @@ export function mapError(e: unknown): ChartResponse {
   return { status: 500, body: { error: "INTERNAL_SERVER_ERROR" } };
 }
 
-export interface ChartApiOptions { appRole?: string; contextSecret?: string; contextTtlSeconds?: number; }
+export interface ChartApiOptions { appRole?: string; contextSecret?: string; contextTtlSeconds?: number; documentationAgent?: DocumentationAgent; }
 const NIL = "00000000-0000-0000-0000-000000000000";
 
 export class ChartApi {
   private readonly appRole: string | null;
   private readonly secret: string;
   private readonly ttl: number;
+  private readonly docAgent: DocumentationAgent;
   constructor(
     private readonly pool: Pool,
     private readonly resolveContext: ChartContextResolver,
@@ -120,6 +123,7 @@ export class ChartApi {
     if (secret.length < 32) throw new Error("STARTUP_BLOCKED_NOVA_CONTEXT_SECRET_TOO_SHORT");
     this.secret = secret;
     this.ttl = Math.min(Math.max(options.contextTtlSeconds ?? 120, 10), 900);
+    this.docAgent = options.documentationAgent ?? new DocumentationAgent(providerFromEnv());
   }
 
   /** Signed session context the database verifies (see build_65 nova_verified_context). */
@@ -212,6 +216,10 @@ export class ChartApi {
           if (!DATE.test(date)) throw new ChartError("FIELD_INVALID:date");
           return { status: 200, body: { item: await this.session(c, db => this.mar(db, admissionId, date)) } };
         }
+        if (M === "POST" && r.length === 4 && r[2] === "notes" && r[3] === "assist") {
+          await this.require(c, "chart.note.write");
+          return { status: 201, body: { item: await this.session(c, db => this.assistNote(db, c, admissionId, obj(req.body))) } };
+        }
         if (M === "POST" && r.length === 3 && r[2] === "notes") {
           await this.require(c, "chart.note.write");
           return { status: 201, body: { item: await this.session(c, db => this.createNote(db, c, admissionId, obj(req.body))) } };
@@ -230,6 +238,14 @@ export class ChartApi {
         if (M === "POST" && r[2] === "cosign") {
           await this.require(c, "chart.note.cosign");
           return { status: 200, body: { item: await this.session(c, db => this.cosignNote(db, noteId)) } };
+        }
+        if (M === "GET" && r[2] === "ai") {
+          await this.require(c, "chart.read");
+          return { status: 200, body: { item: await this.session(c, db => this.aiRun(db, noteId)) } };
+        }
+        if (M === "POST" && r[2] === "acknowledge-ai") {
+          await this.require(c, "chart.note.sign");
+          return { status: 200, body: { item: await this.session(c, db => this.acknowledgeAi(db, noteId)) } };
         }
         if (M === "POST" && r[2] === "addendum") {
           await this.require(c, "chart.note.sign");
@@ -274,7 +290,7 @@ export class ChartApi {
     const allergies = await db.query("SELECT allergen, allergy_type, reaction, severity FROM nova_resident_allergies WHERE patient_id = $1 AND status = 'active' ORDER BY allergen", [pid]);
     const completeness = await db.query("SELECT * FROM nova_chart_completeness($1)", [admissionId]);
     const notes = await db.query(`SELECT n.id, n.note_type, n.service_date, n.start_time, n.end_time, n.location, n.service_code, n.units, n.narrative,
-          n.resident_response, n.plan_next_steps, n.treatment_plan_goal_ids, n.ai_drafted, n.requires_cosign,
+          n.resident_response, n.plan_next_steps, n.treatment_plan_goal_ids, n.ai_drafted, n.ai_guard_status, n.ai_flags_acknowledged_at, n.requires_cosign,
           n.entered_by, eu.display_name AS author_name, n.created_at, n.authenticated_at,
           n.cosigned_at, cu.display_name AS cosigner_name, (n.entered_by = nova_current_user()) AS mine,
           q.late_entry
@@ -351,6 +367,52 @@ export class ChartApi {
       WHERE id = $1 RETURNING id, authenticated_at`,
       [noteId, f.note_type, f.service_date, f.start_time, f.end_time, f.location, f.service_code, f.units, f.narrative,
        f.resident_response, f.plan_next_steps, f.treatment_plan_goal_ids, f.requires_cosign, f.ai_drafted]);
+    return r.rows[0];
+  }
+
+  // ---------------------------------------------------------------- NovaClerk
+  private async assistNote(db: PoolClient, c: ChartContext, admissionId: string, b: Record<string, unknown>) {
+    const source = str(b, "source", { required: true, max: 20000 })!;
+    const noteType = str(b, "note_type", { required: true, max: 40 })!;
+    if (!NOTE_TYPES.has(noteType)) throw new ChartError("FIELD_INVALID:note_type");
+    const a = await db.query(`SELECT a.patient_id, p.legal_first_name, p.preferred_name FROM nova_admissions a
+      LEFT JOIN nova_resident_profiles p ON p.patient_id = a.patient_id WHERE a.id = $1 AND a.status IN ('pending','active')`, [admissionId]);
+    if (a.rowCount !== 1) throw new ChartError("ADMISSION_NOT_FOUND", 404);
+    const goals = (await db.query(`SELECT g.id, g.goal_number, g.goal FROM nova_treatment_plan_goals g JOIN nova_treatment_plans t ON t.id = g.treatment_plan_id
+      WHERE t.admission_id = $1 AND t.status = 'active' AND g.status = 'active' ORDER BY g.goal_number`, [admissionId])).rows;
+    const meds = (await db.query("SELECT medication_name FROM nova_medication_orders WHERE admission_id = $1 AND status IN ('active','held')", [admissionId])).rows.map(r => r.medication_name as string);
+    const serviceCode = str(b, "service_code", { max: 20, pattern: /^[A-Za-z0-9]{3,10}$/ });
+    const result = await this.docAgent.run({ source, noteType, residentFirstName: a.rows[0].preferred_name || a.rows[0].legal_first_name || undefined,
+      goals, medications: meds, serviceCode });
+    const narrative = result.draft.narrative.length >= 20 ? result.draft.narrative : (result.draft.narrative + " (expand this narrative)").trim();
+    const note = await db.query(`INSERT INTO nova_clinical_notes(tenant_id, patient_id, admission_id, note_type, service_date, start_time, end_time, service_code, units,
+        narrative, resident_response, plan_next_steps, treatment_plan_goal_ids, ai_drafted, requires_cosign)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14) RETURNING id`,
+      [c.tenantId, a.rows[0].patient_id, admissionId, noteType, str(b, "service_date", { required: true, pattern: DATE }),
+       str(b, "start_time", { pattern: TIME }), str(b, "end_time", { pattern: TIME }), serviceCode, num(b, "units"),
+       narrative, result.draft.resident_response, result.draft.plan_next_steps, result.draft.treatment_plan_goal_ids, bool(b, "requires_cosign")]);
+    const noteId = note.rows[0].id;
+    await db.query(`INSERT INTO nova_ai_draft_runs(tenant_id, patient_id, admission_id, note_id, provider, model, source_text, source_sha256, draft, guard_status, guard_flags, provenance, coach)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'-',$8,$9,$10,$11,$12)`,
+      [c.tenantId, a.rows[0].patient_id, admissionId, noteId, result.provider, result.model, source, JSON.stringify(result.draft),
+       result.guard.status, JSON.stringify(result.guard.flags), JSON.stringify(result.guard.provenance), JSON.stringify(result.coach)]);
+    await db.query("UPDATE nova_clinical_notes SET updated_at = now() WHERE id = $1", [noteId]);   // syncs ai_guard_status
+    return { id: noteId, draft: result.draft, guard: { status: result.guard.status, flags: result.guard.flags }, coach: result.coach, provider: result.provider };
+  }
+
+  private async aiRun(db: PoolClient, noteId: string) {
+    const r = await db.query(`SELECT r.provider, r.model, r.source_text, r.draft, r.guard_status, r.guard_flags, r.provenance, r.coach, r.created_at,
+        n.ai_flags_acknowledged_at, u.display_name AS acknowledged_by_name
+      FROM nova_ai_draft_runs r JOIN nova_clinical_notes n ON n.id = r.note_id LEFT JOIN nova_users u ON u.id = n.ai_flags_acknowledged_by
+      WHERE r.note_id = $1 ORDER BY r.created_at DESC LIMIT 1`, [noteId]);
+    if (r.rowCount !== 1) throw new ChartError("AI_RUN_NOT_FOUND", 404);
+    return r.rows[0];
+  }
+
+  private async acknowledgeAi(db: PoolClient, noteId: string) {
+    const r = await db.query(`UPDATE nova_clinical_notes SET ai_flags_acknowledged_by = nova_current_user()
+      WHERE id = $1 AND ai_drafted AND ai_flags_acknowledged_by IS NULL AND authenticated_at IS NULL RETURNING id, ai_flags_acknowledged_at`, [noteId]);
+    if (r.rowCount !== 1) throw new ChartError("AI_NOTHING_TO_ACKNOWLEDGE", 409);
     return r.rows[0];
   }
 

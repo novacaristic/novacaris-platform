@@ -144,7 +144,7 @@ INSERT INTO nova_clinical_notes(id,tenant_id,patient_id,admission_id,note_type,s
 VALUES ('a5000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001',
   'a4000000-0000-0000-0000-000000000001','skills_training',current_date,'09:00','10:00','H2017',4,
   'Provided independent living skills training on medication routine and meal planning.','Resident identified two steps independently.',
-  true,true,'BHT');
+  false,true,'BHT');
 SELECT t_err('T4.2 note narrative cannot be a stub',
   $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative)
      VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',current_date,'ok')$q$,

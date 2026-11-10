@@ -75,7 +75,7 @@ END $$;
 
 CREATE OR REPLACE FUNCTION nova_is_jwt_session() RETURNS boolean
 LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
-  SELECT current_user = 'authenticated' OR session_user = 'authenticator'
+  SELECT current_user = 'authenticated'
 $$;
 
 CREATE OR REPLACE FUNCTION nova_current_tenant() RETURNS uuid
@@ -173,12 +173,13 @@ LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 DECLARE
   me uuid := nova_current_user();
   maint boolean := nova_is_owner_maintenance();
-  fill text[] := '{}'; trans jsonb := '{}'; arg text; col text; k text;
+  fill text[] := '{}'; trans jsonb := '{}'; managed text[] := '{}'; arg text; col text; k text;
   o jsonb; n jsonb; skip text[]; pair text;
   other_signer_ok boolean := TG_TABLE_NAME IN ('nova_clinical_orders','nova_medication_orders','nova_admissions','nova_diagnostic_reports');
 BEGIN
   FOREACH arg IN ARRAY COALESCE(TG_ARGV::text[], '{}') LOOP
-    IF position('=' IN arg) > 0 THEN
+    IF left(arg,1) = '~' THEN managed := managed || substr(arg,2);
+    ELSIF position('=' IN arg) > 0 THEN
       trans := trans || jsonb_build_object(split_part(arg,'=',1), to_jsonb(string_to_array(split_part(arg,'=',2), ',')));
     ELSE fill := fill || arg; END IF;
   END LOOP;
@@ -231,7 +232,7 @@ BEGIN
     NEW.authenticated_by := OLD.authenticated_by;
     NEW.authenticated_at := OLD.authenticated_at;
     n := to_jsonb(NEW);
-    SELECT array_agg(x) INTO skip FROM (SELECT unnest(fill) x UNION SELECT jsonb_object_keys(trans) UNION SELECT 'updated_at') s;
+    SELECT array_agg(x) INTO skip FROM (SELECT unnest(fill) x UNION SELECT jsonb_object_keys(trans) UNION SELECT unnest(managed) UNION SELECT 'updated_at') s;
     IF (n - skip) IS DISTINCT FROM (o - skip) THEN
       RAISE EXCEPTION 'CHART_LOCKED: % record % is signed; file an amendment instead', TG_TABLE_NAME, OLD.id;
     END IF;
@@ -586,6 +587,12 @@ BEGIN
   IF cred IS NOT NULL AND cred = ANY(COALESCE(rules.require_note_cosign_roles, '{}')) THEN
     NEW.requires_cosign := true;                         -- policy, not the author's choice
   END IF;
+  IF COALESCE(array_length(NEW.treatment_plan_goal_ids,1),0) > 0 AND EXISTS (
+       SELECT 1 FROM unnest(NEW.treatment_plan_goal_ids) gid
+       WHERE NOT EXISTS (SELECT 1 FROM nova_treatment_plan_goals g JOIN nova_treatment_plans t ON t.id = g.treatment_plan_id
+                         WHERE g.id = gid AND t.admission_id = NEW.admission_id)) THEN
+    RAISE EXCEPTION 'NOTE_GOAL_INVALID: linked goals must belong to this resident''s treatment plan';
+  END IF;
   IF TG_OP = 'INSERT' THEN
     NEW.cosigned_by := NULL; NEW.cosigned_at := NULL;
     RETURN NEW;
@@ -657,8 +664,15 @@ BEGIN
       RAISE EXCEPTION 'ORDER_AUTH_NOT_PRESCRIBER: issuer is not a prescriber on the staff roster';
     END IF;
   END IF;
-  IF TG_OP = 'UPDATE' AND OLD.discontinued_at IS NULL AND NEW.discontinued_at IS NOT NULL THEN
-    NEW.discontinued_at := now();
+  IF TG_OP = 'INSERT' THEN
+    NEW.discontinued_at := NULL; NEW.discontinued_by := NULL;
+  ELSIF OLD.discontinued_at IS NULL AND NEW.discontinued_at IS NOT NULL THEN
+    IF NOT (COALESCE((nova_staff(nova_current_user())).may_prescribe, false) OR COALESCE((nova_staff(nova_current_user())).may_verify_orders, false)) THEN
+      RAISE EXCEPTION 'ORDER_DISCONTINUE_NOT_PERMITTED: only prescribers or order-verifying staff can discontinue an order';
+    END IF;
+    NEW.discontinued_at := now(); NEW.discontinued_by := nova_current_user();
+  ELSIF NEW.discontinued_by IS DISTINCT FROM OLD.discontinued_by THEN
+    RAISE EXCEPTION 'ORDER_FORGED: discontinued_by is set only when discontinuing';
   END IF;
   RETURN NEW;
 END $$;
@@ -687,12 +701,18 @@ CREATE TABLE IF NOT EXISTS nova_medication_orders (
  start_date date NOT NULL,
  stop_date date,
  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','held','discontinued','completed')),
+ status_changed_by uuid REFERENCES nova_users(id),
+ status_changed_at timestamptz,
  entered_by uuid REFERENCES nova_users(id),
  created_at timestamptz NOT NULL DEFAULT now(),
  authenticated_by uuid REFERENCES nova_users(id),        -- transcription verified by
  authenticated_at timestamptz,
  CHECK (NOT is_prn OR prn_indication IS NOT NULL)
 );
+
+ALTER TABLE nova_medication_orders ADD COLUMN IF NOT EXISTS status_changed_by uuid REFERENCES nova_users(id);
+ALTER TABLE nova_medication_orders ADD COLUMN IF NOT EXISTS status_changed_at timestamptz;
+ALTER TABLE nova_clinical_orders ADD COLUMN IF NOT EXISTS discontinued_by uuid REFERENCES nova_users(id);
 
 -- 14. MAR — R9-10-712(C) medication administration documentation
 CREATE TABLE IF NOT EXISTS nova_medication_administrations (
@@ -742,7 +762,8 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  SELECT * INTO o FROM nova_medication_orders WHERE id = NEW.medication_order_id;
+  -- lock the order so concurrent passes cannot both slip under the PRN cap
+  SELECT * INTO o FROM nova_medication_orders WHERE id = NEW.medication_order_id FOR UPDATE;
   IF o.id IS NULL THEN RAISE EXCEPTION 'MAR_ORDER: medication order not found'; END IF;
   IF o.patient_id <> NEW.patient_id OR o.admission_id <> NEW.admission_id THEN
     RAISE EXCEPTION 'MAR_WRONG_RESIDENT: order belongs to a different resident/admission';
@@ -757,6 +778,9 @@ BEGIN
 
   SELECT COALESCE((SELECT facility_timezone FROM nova_chart_rules WHERE tenant_id = NEW.tenant_id), 'America/Phoenix') INTO tz;
   IF NEW.administered_at > now() + interval '5 minutes' THEN RAISE EXCEPTION 'MAR_TIME: administration time is in the future'; END IF;
+  IF NEW.administered_at < now() - make_interval(hours => COALESCE((SELECT note_late_entry_hours FROM nova_chart_rules WHERE tenant_id = NEW.tenant_id), 24)) THEN
+    RAISE EXCEPTION 'MAR_TOO_LATE: administrations older than the late-entry window must be documented by amendment';
+  END IF;
   IF (NEW.administered_at AT TIME ZONE tz)::date < o.start_date
      OR (o.stop_date IS NOT NULL AND (NEW.administered_at AT TIME ZONE tz)::date > o.stop_date) THEN
     RAISE EXCEPTION 'MAR_OUTSIDE_ORDER_DATES: order runs % to %', o.start_date, COALESCE(o.stop_date::text,'open');
@@ -831,8 +855,22 @@ BEGIN
       RAISE EXCEPTION 'MEDORDER_NOT_PERMITTED: verifier is not permitted to verify orders';
     END IF;
   END IF;
-  IF TG_OP = 'UPDATE' AND NEW.status IN ('discontinued','completed') AND OLD.status NOT IN ('discontinued','completed') THEN
-    NEW.stop_date := COALESCE(OLD.stop_date, current_date);
+  IF TG_OP = 'INSERT' THEN
+    NEW.status_changed_by := NULL; NEW.status_changed_at := NULL;
+  ELSIF NEW.status IS DISTINCT FROM OLD.status THEN
+    IF NOT (COALESCE((nova_staff(nova_current_user())).may_verify_orders, false) OR COALESCE((nova_staff(nova_current_user())).may_prescribe, false)) THEN
+      RAISE EXCEPTION 'MEDORDER_NOT_PERMITTED: only prescribers or order-verifying staff can hold, resume or stop a medication';
+    END IF;
+    NEW.status_changed_by := nova_current_user(); NEW.status_changed_at := now();
+    IF NEW.status IN ('discontinued','completed') AND OLD.status NOT IN ('discontinued','completed') THEN
+      NEW.stop_date := COALESCE(OLD.stop_date, current_date);
+    END IF;
+  ELSE
+    NEW.status_changed_by := OLD.status_changed_by; NEW.status_changed_at := OLD.status_changed_at;
+    IF NEW.stop_date IS DISTINCT FROM OLD.stop_date AND OLD.authenticated_at IS NOT NULL
+       AND NOT (COALESCE((nova_staff(nova_current_user())).may_verify_orders, false) OR COALESCE((nova_staff(nova_current_user())).may_prescribe, false)) THEN
+      RAISE EXCEPTION 'MEDORDER_NOT_PERMITTED: only prescribers or order-verifying staff can set a stop date';
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
@@ -843,17 +881,25 @@ CREATE TRIGGER a_medorder_rules BEFORE INSERT OR UPDATE ON nova_medication_order
 CREATE OR REPLACE FUNCTION nova_admission_rules() RETURNS trigger
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    NEW.discharged_at := NULL; NEW.discharge_authenticated_by := NULL;
+    IF NEW.status = 'discharged' THEN RAISE EXCEPTION 'DISCHARGE_NOT_PERMITTED: create the admission first, then discharge it'; END IF;
+    RETURN NEW;
+  END IF;
   IF NEW.status = 'discharged' AND OLD.status IS DISTINCT FROM 'discharged' THEN
+    IF NOT (COALESCE((nova_staff(nova_current_user())).may_supervise, false) OR COALESCE((nova_staff(nova_current_user())).may_prescribe, false)) THEN
+      RAISE EXCEPTION 'DISCHARGE_NOT_PERMITTED: only a supervisor or prescriber can discharge a resident';
+    END IF;
     NEW.discharge_authenticated_by := nova_current_user();
-    NEW.discharged_at := COALESCE(NEW.discharged_at, now());
-    IF NEW.discharged_at > now() + interval '5 minutes' THEN RAISE EXCEPTION 'DISCHARGE_TIME: discharge time is in the future'; END IF;
-  ELSIF NEW.discharge_authenticated_by IS DISTINCT FROM OLD.discharge_authenticated_by THEN
-    RAISE EXCEPTION 'DISCHARGE_FORGED: discharge attestation is set only when discharging';
+    NEW.discharged_at := now();               -- documented time; a different actual time goes in an amendment
+  ELSIF NEW.discharge_authenticated_by IS DISTINCT FROM OLD.discharge_authenticated_by
+        OR NEW.discharged_at IS DISTINCT FROM OLD.discharged_at THEN
+    RAISE EXCEPTION 'DISCHARGE_FORGED: discharge time and attestation are set only when discharging';
   END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS a_admission_rules ON nova_admissions;
-CREATE TRIGGER a_admission_rules BEFORE UPDATE ON nova_admissions FOR EACH ROW EXECUTE FUNCTION nova_admission_rules();
+CREATE TRIGGER a_admission_rules BEFORE INSERT OR UPDATE ON nova_admissions FOR EACH ROW EXECUTE FUNCTION nova_admission_rules();
 
 -- Amendments: real visible target for the same resident; corrections only by the author or a supervisor
 CREATE OR REPLACE FUNCTION nova_amendment_rules() RETURNS trigger
@@ -1087,8 +1133,8 @@ DO $attach$ BEGIN
   PERFORM nova_chart_attach('nova_treatment_plan_goals', ARRAY['status=active>met,active>revised,active>discontinued']);
   PERFORM nova_chart_attach('nova_clinical_notes', ARRAY['cosigned_by','cosigned_at']);
   PERFORM nova_chart_attach('nova_chart_amendments');
-  PERFORM nova_chart_attach('nova_clinical_orders', ARRAY['discontinued_at']);
-  PERFORM nova_chart_attach('nova_medication_orders', ARRAY['status=active>held,held>active,active>discontinued,held>discontinued,active>completed','stop_date']);
+  PERFORM nova_chart_attach('nova_clinical_orders', ARRAY['discontinued_at','discontinued_by']);
+  PERFORM nova_chart_attach('nova_medication_orders', ARRAY['status=active>held,held>active,active>discontinued,held>discontinued,active>completed','stop_date','~status_changed_by','~status_changed_at']);
   PERFORM nova_chart_attach('nova_medication_administrations',
     ARRAY['effect_assessment','effect_assessed_at','effect_assessed_by','adverse_reaction']);
   PERFORM nova_chart_attach('nova_emergency_safety_responses', ARRAY['representative_notified_at','resident_debriefed']);

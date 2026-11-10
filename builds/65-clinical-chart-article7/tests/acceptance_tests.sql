@@ -375,6 +375,30 @@ SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-0000
 SELECT t_err('R6.7 staff without medication privileges cannot chart a given dose',
   $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,medication_name,strength,dose_given,route,administered_by_name,professional_designation,authenticated_by)
      VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','a7000000-0000-0000-0000-000000000001',now(),'given','x','x','25','PO','x','x','a1000000-0000-0000-0000-000000000003')$q$, 'MAR_NOT_PERMITTED');
+-- second review pass (N2–N4, S3), still as the BHT
+SELECT t_err('N2.1 staff without order rights cannot hold or stop a medication',
+  $q$UPDATE nova_medication_orders SET status='held' WHERE id='a7000000-0000-0000-0000-000000000001'$q$, 'MEDORDER_NOT_PERMITTED');
+SELECT t_err('N2.2 staff without order rights cannot discontinue a prescriber order',
+  $q$UPDATE nova_clinical_orders SET discontinued_at=now() WHERE id='a6000000-0000-0000-0000-000000000001'$q$, 'ORDER_DISCONTINUE_NOT_PERMITTED');
+SELECT t_err('N4.1 discharge time cannot be pre-filled or back-dated',
+  $q$UPDATE nova_admissions SET discharged_at='2020-01-01' WHERE id='a4000000-0000-0000-0000-000000000001'$q$, 'DISCHARGE_FORGED');
+SELECT t_err('N4.2 staff without supervisor/prescriber rights cannot discharge',
+  $q$UPDATE nova_admissions SET status='discharged' WHERE id='a4000000-0000-0000-0000-000000000001'$q$, 'DISCHARGE_NOT_PERMITTED');
+SELECT t_err('S3.1 notes can only link goals from this resident''s plan',
+  $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative,treatment_plan_goal_ids)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',current_date,
+             'Note linking a goal that is not on this plan.',ARRAY[gen_random_uuid()])$q$, 'NOTE_GOAL_INVALID');
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000002'); -- RN
+SELECT t_err('N3.1 back-dated administrations beyond the late-entry window are refused',
+  $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,medication_name,strength,dose_given,route,pre_behavior_assessment,administered_by_name,professional_designation,authenticated_by)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','a7000000-0000-0000-0000-000000000001',now()-interval '3 days','given','x','x','25','PO','x','x','x','a1000000-0000-0000-0000-000000000002')$q$, 'MAR_TOO_LATE');
+UPDATE nova_medication_orders SET status='held' WHERE id='a7000000-0000-0000-0000-000000000001';
+SELECT t_ok('N2.3 who held the medication, and when, is recorded by the database',
+  (SELECT status='held' AND status_changed_by='a1000000-0000-0000-0000-000000000002' AND status_changed_at IS NOT NULL FROM nova_medication_orders WHERE id='a7000000-0000-0000-0000-000000000001'));
+UPDATE nova_medication_orders SET status='active' WHERE id='a7000000-0000-0000-0000-000000000001';
+UPDATE nova_medication_orders SET status_changed_by='a1000000-0000-0000-0000-000000000001', status_changed_at='2020-01-01' WHERE id='a7000000-0000-0000-0000-000000000001';
+SELECT t_ok('N2.4 status-change attribution cannot be forged (attempt is ignored)',
+  (SELECT status_changed_by='a1000000-0000-0000-0000-000000000002' AND status_changed_at > now() - interval '1 hour' FROM nova_medication_orders WHERE id='a7000000-0000-0000-0000-000000000001'));
 SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000001'); -- Dr
 SELECT t_err('R8.2 discharge attestation cannot be forged',
   $q$UPDATE nova_admissions SET discharge_authenticated_by='a1000000-0000-0000-0000-000000000002' WHERE id='a4000000-0000-0000-0000-000000000001'$q$, 'DISCHARGE_FORGED');

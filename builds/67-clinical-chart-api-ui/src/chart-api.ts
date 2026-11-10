@@ -78,7 +78,7 @@ function id(v: string | undefined): string {
 }
 
 // Map database errors to safe API errors. Only our own raised codes pass through.
-const KNOWN = /^(CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|SIGNATURE_NOT_OWN|SIGN_NOT_AUTHOR|NOT_AUTHOR|NOT_SIGNABLE|NO_SESSION_USER|COSIGN_[A-Z_]+|ORDER_AUTH[A-Z_]*|MAR_[A-Z_]+|MEDORDER_[A-Z_]+|AMENDMENT_[A-Z_]+|WRONG_RESIDENT|DISCHARGE_[A-Z_]+|ADMISSION_NOT_FOUND_OR_NOT_VISIBLE)\b/;
+const KNOWN = /^(NOTE_GOAL_INVALID|ORDER_[A-Z_]+|CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|SIGNATURE_NOT_OWN|SIGN_NOT_AUTHOR|NOT_AUTHOR|NOT_SIGNABLE|NO_SESSION_USER|COSIGN_[A-Z_]+|ORDER_AUTH[A-Z_]*|MAR_[A-Z_]+|MEDORDER_[A-Z_]+|AMENDMENT_[A-Z_]+|WRONG_RESIDENT|DISCHARGE_[A-Z_]+|ADMISSION_NOT_FOUND_OR_NOT_VISIBLE)\b/;
 export function mapError(e: unknown): ChartResponse {
   if (e instanceof ChartError) return { status: e.status, body: { error: e.code } };
   const err = e as { message?: string; code?: string };
@@ -86,7 +86,7 @@ export function mapError(e: unknown): ChartResponse {
   const m = msg.match(KNOWN);
   if (m) {
     const code = m[1];
-    const status = /SIGNATURE_NOT_OWN|ORDER_AUTH|COSIGN_SELF|COSIGN_NOT_SUPERVISOR|NOT_AUTHOR|MAR_NOT_PERMITTED|MEDORDER_NOT_PERMITTED|AMENDMENT_NOT_AUTHOR/.test(code) ? 403
+    const status = /SIGNATURE_NOT_OWN|ORDER_AUTH|COSIGN_SELF|COSIGN_NOT_SUPERVISOR|NOT_AUTHOR|MAR_NOT_PERMITTED|MEDORDER_NOT_PERMITTED|AMENDMENT_NOT_AUTHOR|DISCHARGE_NOT_PERMITTED|ORDER_DISCONTINUE_NOT_PERMITTED/.test(code) ? 403
       : /NOT_FOUND|NOT_SIGNABLE/.test(code) ? 404
       : /CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|COSIGN_BEFORE_SIGN|COSIGN_FORGED|MAR_PRN_DAILY_MAX/.test(code) ? 409
       : 400;
@@ -96,6 +96,7 @@ export function mapError(e: unknown): ChartResponse {
   if (err?.code === "23514" || err?.code === "23502") return { status: 400, body: { error: "VALIDATION_FAILED" } };
   if (err?.code === "23503") return { status: 400, body: { error: "REFERENCE_INVALID" } };
   if (err?.code === "22P02" || err?.code === "22007" || err?.code === "22008") return { status: 400, body: { error: "VALUE_INVALID" } };
+  if (process.env.NOVA_DEBUG_ERRORS === "1") console.error("chart_api_500", e);
   return { status: 500, body: { error: "INTERNAL_SERVER_ERROR" } };
 }
 
@@ -130,14 +131,26 @@ export class ChartApi {
   }
 
   /**
-   * Refuse to serve chart requests over a database login that bypasses RLS
-   * (superuser / BYPASSRLS), unless explicitly allowed for local tests.
+   * Refuse to serve chart requests over a database login that could escape the
+   * restricted role: superuser / BYPASSRLS, the PostgREST "authenticator" login,
+   * any member of "authenticated" (could switch to the JWT branch), or a login
+   * that owns tables (owners skip RLS). Use a dedicated login, e.g.
+   *   CREATE ROLE nova_api LOGIN PASSWORD '...' NOINHERIT IN ROLE nova_app;
+   * and NOVA_DB_APP_ROLE=nova_app (or NOVA_DB_APP_ROLE=none with GRANT nova_app TO nova_api INHERIT).
+   * NOVA_ALLOW_PRIVILEGED_DB_LOGIN=true is for local tests only.
    */
   static async assertSafeConnection(pool: Pool, allowPrivileged = process.env.NOVA_ALLOW_PRIVILEGED_DB_LOGIN === "true"): Promise<void> {
-    const r = await pool.query("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = session_user");
+    const r = await pool.query(`SELECT r.rolsuper, r.rolbypassrls, r.rolname,
+        EXISTS (SELECT 1 FROM pg_roles a WHERE a.rolname = 'authenticated' AND pg_has_role(r.oid, a.oid, 'MEMBER')) AS can_become_authenticated,
+        EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relowner = r.oid) AS owns_tables
+      FROM pg_roles r WHERE r.rolname = session_user`);
     const row = r.rows[0] ?? {};
-    if ((row.rolsuper || row.rolbypassrls) && !allowPrivileged) {
-      throw new Error("STARTUP_BLOCKED_DATABASE_LOGIN_BYPASSES_RLS: connect the API with a restricted login role and set NOVA_DB_APP_ROLE=none");
+    const problems = [
+      row.rolsuper && "superuser", row.rolbypassrls && "bypassrls", row.rolname === "authenticator" && "authenticator_login",
+      row.can_become_authenticated && "member_of_authenticated", row.owns_tables && "owns_tables",
+    ].filter(Boolean);
+    if (problems.length && !allowPrivileged) {
+      throw new Error(`STARTUP_BLOCKED_DATABASE_LOGIN_BYPASSES_RLS:${problems.join(",")}: connect the API with a dedicated restricted login`);
     }
   }
 

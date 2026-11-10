@@ -197,9 +197,54 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     } finally { await c.query("ROLLBACK").catch(() => {}); c.release(); }
   });
 
-  it("refuses to run the API over a database login that bypasses row-level security", async () => {
-    await expect(ChartApi.assertSafeConnection(pool!, false)).rejects.toThrow(/BYPASSES_RLS/);
+  it("refuses RLS-escaping logins; accepts a dedicated restricted login that cannot escape", async () => {
+    await expect(ChartApi.assertSafeConnection(pool!, false)).rejects.toThrow(/BYPASSES_RLS:.*superuser/);
     await expect(ChartApi.assertSafeConnection(pool!, true)).resolves.toBeUndefined();
+    // Recommended deployment: a NOINHERIT login whose only power is switching into nova_app.
+    const db = pool!;
+    await db.query(`DO $$BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='nova_api_test') THEN CREATE ROLE nova_api_test LOGIN NOINHERIT; END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF;
+    END$$`);
+    await db.query("GRANT nova_app TO nova_api_test");
+    await db.query("GRANT CONNECT ON DATABASE " + (await db.query("SELECT current_database() d")).rows[0].d + " TO nova_api_test");
+    await db.query("GRANT USAGE ON SCHEMA public TO nova_api_test");
+    const url = new URL(databaseUrl!); url.username = "nova_api_test"; url.password = "";
+    const restricted = new Pool({ connectionString: url.toString(), max: 2 });
+    try {
+      await expect(ChartApi.assertSafeConnection(restricted, false)).resolves.toBeUndefined();
+      const c = await restricted.connect();
+      try {
+        // escaping the role gives nothing, and the JWT branch is unreachable
+        expect((await c.query("SELECT count(*)::int n FROM nova_clinical_notes").catch(() => ({ rows: [{ n: -1 }] }))).rows[0].n).toBeLessThanOrEqual(0);
+        await expect(c.query("SET ROLE authenticated")).rejects.toThrow(/permission denied/);
+      } finally { c.release(); }
+      const api = new ChartApi(restricted, resolve, authorize, { contextSecret: SECRET, appRole: "nova_app" });
+      const res = await api.handle({ method: "GET", path: "/api/chart/residents", headers: { "x-test-sub": rn() } });
+      expect(res.status).toBe(200);
+      expect((res.body as any).items.map((x: any) => x.admission_id)).toEqual([ids.admA]);
+    } finally { await restricted.end(); }
+  });
+
+  it("PRN daily cap holds under concurrent requests (row lock)", async () => {
+    const db = pool!; const api = new ChartApi(db, resolve, authorize, { contextSecret: SECRET });
+    const orderId = uuid(), medId = uuid();
+    const c = await db.connect();
+    try {
+      await c.query("BEGIN"); await c.query("SET LOCAL ROLE nova_app");
+      await c.query("SELECT set_config('app.ctx',$1,true)", [api.signContext(T.a, U.dr)]);
+      await c.query(`INSERT INTO nova_clinical_orders(id,tenant_id,patient_id,admission_id,order_kind,order_text,order_source,ordered_at,
+        issuing_practitioner_user_id,issuing_practitioner_name,issuing_practitioner_credential,authenticated_by)
+        VALUES ($1,$2,$3,$4,'medication','Lorazepam 1 mg PO PRN max 1/day','electronic',now(),$5,'Dr','PMHNP',$5)`, [orderId, T.a, ids.patA, ids.admA, U.dr]);
+      await c.query(`INSERT INTO nova_medication_orders(id,tenant_id,patient_id,admission_id,clinical_order_id,medication_name,strength,dose,route,frequency,
+        is_prn,prn_indication,prn_max_doses_per_day,is_psychotropic,start_date,authenticated_by)
+        VALUES ($1,$2,$3,$4,$5,'Lorazepam','1 mg','1 mg','PO','PRN',true,'agitation',1,true,current_date - 1,$6)`, [medId, T.a, ids.patA, ids.admA, orderId, U.dr]);
+      await c.query("COMMIT");
+    } finally { c.release(); }
+    const give = () => call(rn(), "POST", "/api/chart/mar", { medication_order_id: medId, outcome: "given", pre_behavior_assessment: "Agitated, pacing" });
+    const results = await Promise.all([give(), give(), give(), give()]);
+    expect(results.filter(r => r.status === 201)).toHaveLength(1);
+    expect(results.filter(r => r.body?.error === "MAR_PRN_DAILY_MAX")).toHaveLength(3);
   });
 
   it("another agency cannot read, write, sign, or give meds on this chart", async () => {

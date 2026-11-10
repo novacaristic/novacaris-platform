@@ -43,4 +43,7 @@ log "RESULT: $SUMMARY"
 log ""; log "== 4. Supabase JWT path"
 psql "$SUPABASE_DB_URL" -q -f scripts/staging/supabase_jwt_check.sql 2>&1 | grep -E "PASS|FAIL|SKIP" | tee -a "$REPORT" || true
 
+log ""; log "== 5. Rotate the context secret (the test run used a known test value)"
+psql "$SUPABASE_DB_URL" -q -c "select nova_set_context_secret(encode(gen_random_bytes(32),'hex'))" >/dev/null && log "PASS: test secret replaced with a random one (set your API's NOVA_CONTEXT_SECRET with nova_set_context_secret before connecting it)"
+
 log ""; log "Report saved to $REPORT — send this file back for review."

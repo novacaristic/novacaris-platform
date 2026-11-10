@@ -26,10 +26,17 @@ EXCEPTION WHEN OTHERS THEN
   VALUES (p_test, CASE WHEN SQLERRM ILIKE '%'||p_expect||'%' THEN 'PASS' ELSE 'FAIL' END, SQLERRM);
 END $$;
 
+-- TEST-ONLY signer of session contexts (plays the role of the API, which holds the
+-- secret). It is DROPPED at the end of this file; it must never exist outside a test run.
+INSERT INTO nova_context_secret(id, secret) VALUES (1, 'test-only-context-secret-0123456789abcdef')
+ON CONFLICT (id) DO NOTHING;
 CREATE OR REPLACE FUNCTION t_as(p_tenant uuid, p_user uuid) RETURNS void
-LANGUAGE plpgsql AS $$ BEGIN
-  PERFORM set_config('app.tenant_id', p_tenant::text, false);
-  PERFORM set_config('app.user_id', p_user::text, false);
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions, pg_temp AS $$
+DECLARE exp text := (extract(epoch FROM now())::bigint + 3600)::text; payload text; sec text;
+BEGIN
+  SELECT secret INTO sec FROM nova_context_secret WHERE id = 1;
+  payload := 'v1.' || p_tenant || '.' || p_user || '.' || exp;
+  PERFORM set_config('app.ctx', payload || '.' || encode(hmac(payload, sec, 'sha256'), 'hex'), false);
 END $$;
 GRANT EXECUTE ON FUNCTION t_ok(text,boolean,text), t_err(text,text,text), t_as(uuid,uuid) TO nova_app;
 
@@ -66,6 +73,12 @@ INSERT INTO nova_patients(id,tenant_id,external_patient_key) VALUES
  ('a2000000-0000-0000-0000-000000000002','a0000000-0000-0000-0000-00000000000a','A-2'),
  ('b2000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-00000000000b','B-1')
 ON CONFLICT (id) DO NOTHING;
+INSERT INTO nova_staff_credentials(tenant_id,user_id,credential,may_prescribe,may_verify_orders,may_administer_medication,may_assist_self_administration,may_supervise) VALUES
+ ('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000001','PMHNP',true,true,true,false,true),
+ ('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000002','RN',false,true,true,false,true),
+ ('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000003','BHT',false,false,false,true,false),
+ ('b0000000-0000-0000-0000-00000000000b','b1000000-0000-0000-0000-000000000001','RN',false,true,true,false,true);
+INSERT INTO nova_chart_rules(tenant_id, require_note_cosign_roles) VALUES ('a0000000-0000-0000-0000-00000000000a', ARRAY['BHT']);
 INSERT INTO nova_document_instances(id,tenant_id,document_type,title) VALUES
  ('a3000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-00000000000a','form','A doc'),
  ('b3000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-00000000000b','form','B doc')
@@ -216,9 +229,9 @@ SELECT t_err('T6.7 PRN effect cannot be overwritten',
   $q$UPDATE nova_medication_administrations SET effect_assessment='rewritten' WHERE id='a8000000-0000-0000-0000-000000000001'$q$, 'CHART_LOCKED');
 SELECT t_err('T6.8 refused dose needs a reason',
   $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,
-       medication_name,strength,dose_given,route,administered_by_name,professional_designation)
+       medication_name,strength,dose_given,route,administered_by_name,professional_designation,authenticated_by)
      VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
-       'a7000000-0000-0000-0000-000000000001',now(),'refused','x','x','0','PO','Nurse (A)','RN')$q$, 'check constraint');
+       'a7000000-0000-0000-0000-000000000001',now(),'refused','x','x','0','PO','Nurse (A)','RN','a1000000-0000-0000-0000-000000000002')$q$, 'check constraint');
 
 -- T7 complete the rest of the chart, then completeness must be clean ----
 INSERT INTO nova_consents(tenant_id,patient_id,admission_id,consent_type,description,signed_by_name,signer_relationship,signed_on,authenticated_by)
@@ -244,9 +257,9 @@ INSERT INTO nova_treatment_plan_goals(tenant_id,treatment_plan_id,goal_number,pr
 VALUES ('a0000000-0000-0000-0000-00000000000a','a9000000-0000-0000-0000-000000000001',1,'Difficulty managing medications',
   'Manage own medication routine','Takes meds with 1 or fewer prompts on 6 of 7 days','Daily skills coaching','Daily','BHT');
 SELECT nova_sign('nova_treatment_plans','a9000000-0000-0000-0000-000000000001');
+SELECT nova_sign('nova_resident_profiles', (SELECT id FROM nova_resident_profiles WHERE patient_id='a2000000-0000-0000-0000-000000000001'));
 SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000001');
 SELECT nova_sign('nova_admissions','a4000000-0000-0000-0000-000000000001');
-SELECT nova_sign('nova_resident_profiles', (SELECT id FROM nova_resident_profiles WHERE patient_id='a2000000-0000-0000-0000-000000000001'));
 SELECT t_ok('T7.1 fully documented chart has no missing/unsigned items',
   NOT EXISTS (SELECT 1 FROM nova_chart_completeness('a4000000-0000-0000-0000-000000000001') WHERE status NOT IN ('ok','not_applicable')),
   (SELECT string_agg(requirement_code||'='||status,', ') FROM nova_chart_completeness('a4000000-0000-0000-0000-000000000001') WHERE status NOT IN ('ok','not_applicable')));
@@ -275,6 +288,112 @@ SELECT t_ok('T9.2 claim backed by a signed, cosigned note passes validation',
 SELECT t_err('T9.3 NPI must be 10 digits',
   $q$UPDATE nova_claims SET billing_provider_npi='12345' WHERE id='ab000000-0000-0000-0000-000000000001'$q$, 'check constraint');
 
+-- ======================================================================
+-- R: regression tests for the independent security review (C1–C10)
+-- ======================================================================
+-- R4 authorship & identity tables (as A)
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000003'); -- BHT
+SELECT t_err('R4.1 app users cannot edit staff identities (account takeover)',
+  $q$UPDATE nova_users SET external_subject='attacker' WHERE id='a1000000-0000-0000-0000-000000000001'$q$, 'permission denied');
+SELECT t_err('R4.2 app users cannot change the staff roster',
+  $q$UPDATE nova_staff_credentials SET may_prescribe=true WHERE user_id='a1000000-0000-0000-0000-000000000003'$q$, 'permission denied');
+INSERT INTO nova_clinical_notes(id,tenant_id,patient_id,admission_id,note_type,service_date,narrative,entered_by)
+VALUES ('a5000000-0000-0000-0000-000000000002','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001',
+  'a4000000-0000-0000-0000-000000000001','progress',current_date,'BHT draft about evening routine and chores.','a1000000-0000-0000-0000-000000000001');
+SELECT t_ok('R4.3 submitted author is ignored; author is the signed-in user',
+  (SELECT entered_by='a1000000-0000-0000-0000-000000000003' FROM nova_clinical_notes WHERE id='a5000000-0000-0000-0000-000000000002'));
+SELECT t_ok('R7.1 cosign requirement comes from agency policy, not the author (BHT notes need cosign)',
+  (SELECT requires_cosign FROM nova_clinical_notes WHERE id='a5000000-0000-0000-0000-000000000002'));
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000002'); -- RN
+SELECT t_err('R4.4 another user cannot edit someone''s draft',
+  $q$UPDATE nova_clinical_notes SET narrative='Rewritten by a different staff member entirely.' WHERE id='a5000000-0000-0000-0000-000000000002'$q$, 'NOT_AUTHOR');
+SELECT t_err('R4.5 another user cannot delete someone''s draft',
+  $q$DELETE FROM nova_clinical_notes WHERE id='a5000000-0000-0000-0000-000000000002'$q$, 'NOT_AUTHOR');
+SELECT t_err('R4.6 another user cannot sign someone''s note',
+  $q$SELECT nova_sign('nova_clinical_notes','a5000000-0000-0000-0000-000000000002')$q$, 'SIGN_NOT_AUTHOR');
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000003');
+SELECT nova_sign('nova_clinical_notes','a5000000-0000-0000-0000-000000000002');
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000002');
+SELECT t_err('R7.2 cosign time cannot be forged without cosigning',
+  $q$UPDATE nova_clinical_notes SET cosigned_at=now() WHERE id='a5000000-0000-0000-0000-000000000002'$q$, 'COSIGN_FORGED');
+UPDATE nova_clinical_notes SET requires_cosign=false WHERE id='a5000000-0000-0000-0000-000000000002';
+SELECT t_ok('R7.3 a required cosign cannot be switched off',
+  (SELECT requires_cosign FROM nova_clinical_notes WHERE id='a5000000-0000-0000-0000-000000000002'));
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000003');
+SELECT t_err('R11.1 non-author, non-supervisor cannot file a correction',
+  $q$INSERT INTO nova_chart_amendments(tenant_id,patient_id,target_table,target_id,amendment_type,reason,amended_content,authenticated_by)
+     SELECT 'a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','nova_history_physicals',id,'entered_in_error','x','void it','a1000000-0000-0000-0000-000000000003'
+     FROM nova_history_physicals WHERE patient_id='a2000000-0000-0000-0000-000000000001' LIMIT 1$q$, 'AMENDMENT_NOT_AUTHOR');
+SELECT t_err('R11.2 amendment must point at a real record of the same resident',
+  $q$INSERT INTO nova_chart_amendments(tenant_id,patient_id,target_table,target_id,amendment_type,reason,amended_content,authenticated_by)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000002','nova_clinical_notes','a5000000-0000-0000-0000-000000000002','addendum','x','y','a1000000-0000-0000-0000-000000000003')$q$, 'WRONG_RESIDENT');
+
+-- R6 orders & MAR
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000002'); -- RN
+SELECT t_err('R6.1 a non-prescriber cannot issue and authenticate an order',
+  $q$INSERT INTO nova_clinical_orders(tenant_id,patient_id,admission_id,order_kind,order_text,order_source,ordered_at,issuing_practitioner_user_id,issuing_practitioner_name,issuing_practitioner_credential,authenticated_by)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','medication','Self-issued','electronic',now(),
+             'a1000000-0000-0000-0000-000000000002','Nurse','RN','a1000000-0000-0000-0000-000000000002')$q$, 'NOT_PRESCRIBER');
+INSERT INTO nova_clinical_orders(id,tenant_id,patient_id,admission_id,order_kind,order_text,order_source,ordered_at,issuing_practitioner_user_id,issuing_practitioner_name,issuing_practitioner_credential,received_by_name)
+VALUES ('a6000000-0000-0000-0000-000000000003','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
+        'medication','Lorazepam 1 mg PO PRN, max 1/day','telephone',now(),'a1000000-0000-0000-0000-000000000001','Dr. Prescriber','PMHNP','Nurse (A)');
+INSERT INTO nova_medication_orders(id,tenant_id,patient_id,admission_id,clinical_order_id,medication_name,strength,dose,route,frequency,is_prn,prn_indication,prn_max_doses_per_day,is_psychotropic,start_date)
+VALUES ('a7000000-0000-0000-0000-000000000003','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
+        'a6000000-0000-0000-0000-000000000003','Lorazepam','1 mg','1 mg','PO','daily PRN',true,'acute agitation',1,true,current_date - 1);
+SELECT t_err('R6.2 transcription cannot be verified before the prescriber authenticates',
+  $q$SELECT nova_sign('nova_medication_orders','a7000000-0000-0000-0000-000000000003')$q$, 'MEDORDER_UNAUTHENTICATED');
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000001');
+SELECT nova_sign('nova_clinical_orders','a6000000-0000-0000-0000-000000000003');
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000002');
+SELECT nova_sign('nova_medication_orders','a7000000-0000-0000-0000-000000000003');
+INSERT INTO nova_medication_administrations(id,tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,medication_name,strength,
+  dose_given,route,pre_behavior_assessment,administered_by_name,professional_designation,authenticated_by)
+VALUES ('a8000000-0000-0000-0000-000000000003','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
+  'a7000000-0000-0000-0000-000000000003',now(),'given','x','x','50mg','IV','Yelling, pacing, threatening to leave','Someone Else','MD','a1000000-0000-0000-0000-000000000002');
+SELECT t_ok('R6.3 dose and route are forced from the order (50mg IV request recorded as 1 mg PO)',
+  (SELECT dose_given='1 mg' AND route='PO' FROM nova_medication_administrations WHERE id='a8000000-0000-0000-0000-000000000003'));
+SELECT t_ok('R6.4 designation and name come from the staff roster, not the client',
+  (SELECT professional_designation='RN' AND administered_by_name='Nurse (A)' FROM nova_medication_administrations WHERE id='a8000000-0000-0000-0000-000000000003'));
+SELECT t_err('R6.5 PRN daily maximum is enforced',
+  $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,medication_name,strength,dose_given,route,pre_behavior_assessment,administered_by_name,professional_designation,authenticated_by)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','a7000000-0000-0000-0000-000000000003',now(),'given','x','x','1','PO','again','x','x','a1000000-0000-0000-0000-000000000002')$q$, 'MAR_PRN_DAILY_MAX');
+SELECT t_err('R8.1 effect time/person cannot be forged',
+  $q$UPDATE nova_medication_administrations SET effect_assessed_by='a1000000-0000-0000-0000-000000000001', effect_assessed_at='2020-01-01' WHERE id='a8000000-0000-0000-0000-000000000003'$q$, 'MAR_FORGED');
+-- R5 lifecycle of signed records
+SELECT t_ok('R5.1 a signed medication order can be held (clinical safety)',
+  (SELECT count(*)=1 FROM (SELECT 1) x WHERE (SELECT status FROM nova_medication_orders WHERE id='a7000000-0000-0000-0000-000000000003')='active'));
+UPDATE nova_medication_orders SET status='held' WHERE id='a7000000-0000-0000-0000-000000000003';
+UPDATE nova_medication_orders SET status='discontinued' WHERE id='a7000000-0000-0000-0000-000000000003';
+SELECT t_ok('R5.2 a signed medication order can be discontinued; stop date set',
+  (SELECT status='discontinued' AND stop_date IS NOT NULL FROM nova_medication_orders WHERE id='a7000000-0000-0000-0000-000000000003'));
+SELECT t_err('R5.3 a discontinued order cannot be quietly re-activated',
+  $q$UPDATE nova_medication_orders SET status='active' WHERE id='a7000000-0000-0000-0000-000000000003'$q$, 'CHART_TRANSITION');
+SELECT t_err('R6.6 no doses outside the order dates / after discontinuation',
+  $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,medication_name,strength,dose_given,route,pre_behavior_assessment,administered_by_name,professional_designation,authenticated_by)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','a7000000-0000-0000-0000-000000000003',now(),'given','x','x','1','PO','x','x','x','a1000000-0000-0000-0000-000000000002')$q$, 'MAR_INACTIVE_ORDER');
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000003'); -- BHT
+SELECT t_err('R6.7 staff without medication privileges cannot chart a given dose',
+  $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,medication_name,strength,dose_given,route,administered_by_name,professional_designation,authenticated_by)
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','a7000000-0000-0000-0000-000000000001',now(),'given','x','x','25','PO','x','x','a1000000-0000-0000-0000-000000000003')$q$, 'MAR_NOT_PERMITTED');
+SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000001'); -- Dr
+SELECT t_err('R8.2 discharge attestation cannot be forged',
+  $q$UPDATE nova_admissions SET discharge_authenticated_by='a1000000-0000-0000-0000-000000000002' WHERE id='a4000000-0000-0000-0000-000000000001'$q$, 'DISCHARGE_FORGED');
+UPDATE nova_admissions SET status='discharged' WHERE id='a4000000-0000-0000-0000-000000000001';
+SELECT t_ok('R5.4 a signed admission can be discharged; attested by the discharging user',
+  (SELECT status='discharged' AND discharged_at IS NOT NULL AND discharge_authenticated_by='a1000000-0000-0000-0000-000000000001' FROM nova_admissions WHERE id='a4000000-0000-0000-0000-000000000001'));
+SELECT t_err('R5.5 a discharged admission cannot be re-opened by editing',
+  $q$UPDATE nova_admissions SET status='active' WHERE id='a4000000-0000-0000-0000-000000000001'$q$, 'CHART_TRANSITION');
+-- R3 audit integrity
+SELECT t_ok('R3.1 audit records the verified actor and the real database login',
+  EXISTS (SELECT 1 FROM nova_chart_audit WHERE row_id='a4000000-0000-0000-0000-000000000001' AND operation='UPDATE'
+          AND actor_user_id='a1000000-0000-0000-0000-000000000001' AND db_role = session_user::text));
+-- R2 / R10 privileges
+SELECT t_err('R2.1 temp tables are not allowed (blocks audit/rule shadowing)', $q$CREATE TEMP TABLE nova_chart_audit(x int)$q$, 'permission denied');
+SELECT t_err('R10.1 admin functions are not callable by app users', $q$SELECT nova_chart_attach('nova_consents')$q$, 'permission denied');
+SELECT t_err('R10.2 audit sequence is not usable by app users', $q$SELECT nextval('nova_chart_audit_id_seq')$q$, 'permission denied');
+SELECT t_err('R10.3 app users cannot read the context secret', $q$SELECT * FROM nova_context_secret$q$, 'permission denied');
+SELECT t_err('R10.4 app users cannot set the context secret', $q$SELECT nova_set_context_secret(repeat('x',40))$q$, 'permission denied');
+
 -- T10 the other tenant sees nothing of ACH's chart ----------------------
 SELECT t_as('b0000000-0000-0000-0000-00000000000b','b1000000-0000-0000-0000-000000000001');
 SELECT t_ok('T10.1 other tenant sees none of the clinical notes', (SELECT count(*) FROM nova_clinical_notes) = 0);
@@ -288,9 +407,28 @@ SELECT t_err('T10.6 cannot sign another tenant''s record',
 SELECT t_err('T10.7 cannot claim another tenant''s session by spoofing tenant_id on insert',
   $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative)
      VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
-             'progress',current_date,'Spoofed note written from the other agency.')$q$, 'row-level security');
+             'progress',current_date,'Spoofed note written from the other agency.')$q$, 'WRONG_RESIDENT');
+
+-- R1 impersonation by setting session variables (as tenant B)
+SELECT set_config('app.tenant_id','a0000000-0000-0000-0000-00000000000a',false), set_config('app.user_id','a1000000-0000-0000-0000-000000000002',false);
+SELECT t_ok('R1.1 raw tenant/user variables are ignored (still only tenant B data)',
+  (SELECT count(*) FROM nova_clinical_notes) = 0 AND nova_current_tenant() = 'b0000000-0000-0000-0000-00000000000b');
+SELECT set_config('app.ctx','v1.a0000000-0000-0000-0000-00000000000a.a1000000-0000-0000-0000-000000000002.9999999999.' || repeat('ab',32), false);
+SELECT t_ok('R1.2 a forged signed context is rejected (no tenant, no rows)',
+  nova_current_tenant() IS NULL AND (SELECT count(*) FROM nova_clinical_notes) = 0 AND (SELECT count(*) FROM nova_patients) = 0);
+SELECT t_err('R1.3 a forged context cannot write', $q$INSERT INTO nova_patients(tenant_id) VALUES ('a0000000-0000-0000-0000-00000000000a')$q$, 'row-level security');
+SELECT t_as('b0000000-0000-0000-0000-00000000000b','b1000000-0000-0000-0000-000000000001');
+SELECT t_err('R9.1 cannot reference another agency''s resident from your own agency',
+  $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative)
+     VALUES ('b0000000-0000-0000-0000-00000000000b','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',current_date,'Cross-agency reference attempt here.')$q$, 'WRONG_RESIDENT');
+SELECT t_err('R9.3 references to another agency''s rows are refused by row-level security',
+  $q$INSERT INTO nova_resident_allergies(tenant_id,patient_id,allergen,allergy_type) VALUES ('b0000000-0000-0000-0000-00000000000b','a2000000-0000-0000-0000-000000000001','x','food')$q$, 'row-level security');
+SELECT t_err('R9.4 a made-up id gives the same answer (no existence oracle)',
+  $q$INSERT INTO nova_resident_allergies(tenant_id,patient_id,allergen,allergy_type) VALUES ('b0000000-0000-0000-0000-00000000000b',gen_random_uuid(),'x','food')$q$, 'row-level security');
+SELECT t_err('R9.2 cannot attach roles across agencies', $q$INSERT INTO nova_user_roles(user_id, role_id) VALUES ('a1000000-0000-0000-0000-000000000001', gen_random_uuid())$q$, 'permission denied');
 
 RESET ROLE;
+DROP FUNCTION IF EXISTS t_as(uuid, uuid);  -- test-only context signer must not outlive the run
 
 -- ---------------------------------------------------------------- report
 SELECT result, test, COALESCE(left(detail,90),'') AS detail FROM nova_test_results ORDER BY n;

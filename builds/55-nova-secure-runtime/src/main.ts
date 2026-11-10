@@ -50,6 +50,7 @@ async function main(): Promise<void> {
   let chartApi: ChartApi | undefined;
   if (process.env.NOVA_CHART_ENABLED === "true") {
     if (typeof security.resolveWorkspaceContext !== "function") throw new Error("STARTUP_BLOCKED_CHART_REQUIRES_WORKSPACE_CONTEXT");
+    await ChartApi.assertSafeConnection(pool);
     chartApi = new ChartApi(pool,
       security.resolveWorkspaceContext as unknown as (r: { method: string; path: string }) => Promise<ChartContext | null>,
       (context, action) => authorize(context as unknown as RequestContext, action));

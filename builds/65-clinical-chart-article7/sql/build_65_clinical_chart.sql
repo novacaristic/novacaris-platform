@@ -22,27 +22,79 @@ SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ---------------------------------------------------------------------
--- Session identity helpers (work in plain Postgres and in Supabase)
--- Plain Postgres / server code:  SET app.tenant_id = '...'; SET app.user_id = '...';
--- Supabase: put tenant_id and nova_user_id in the JWT (app_metadata).
+-- Session identity (security review C1)
+-- Server/API path: the API signs a short-lived context with a secret the
+--   database also holds (in a table app users cannot read):
+--     SET LOCAL app.ctx = 'v1.<tenant>.<user>.<exp_epoch>.<hmac_sha256_hex>'
+--   A session cannot impersonate anyone by setting GUCs, because it cannot
+--   produce a valid signature.
+-- Supabase/PostgREST path: identity comes only from the verified JWT
+--   (tenant_id / nova_user_id in app_metadata), and app.ctx is ignored.
 -- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS nova_context_secret (
+ id integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+ secret text NOT NULL CHECK (length(secret) >= 32),
+ rotated_at timestamptz NOT NULL DEFAULT now()
+);
+REVOKE ALL ON nova_context_secret FROM PUBLIC;
+
+-- Run once per environment by the database owner (never by the app):
+--   SELECT nova_set_context_secret('<same value as NOVA_CONTEXT_SECRET>');
+CREATE OR REPLACE FUNCTION nova_set_context_secret(p_secret text) RETURNS void
+LANGUAGE sql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  INSERT INTO public.nova_context_secret(id, secret, rotated_at) VALUES (1, p_secret, now())
+  ON CONFLICT (id) DO UPDATE SET secret = EXCLUDED.secret, rotated_at = now();
+$$;
+REVOKE ALL ON FUNCTION nova_set_context_secret(text) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION nova_jwt_claim(p_key text) RETURNS text
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
   SELECT COALESCE(
     NULLIF(current_setting('request.jwt.claims', true), '')::jsonb -> 'app_metadata' ->> p_key,
     NULLIF(current_setting('request.jwt.claims', true), '')::jsonb ->> p_key)
 $$;
 
+-- Verifies app.ctx; returns NULLs if absent, malformed, expired or forged.
+CREATE OR REPLACE FUNCTION nova_verified_context(OUT tenant_id uuid, OUT user_id uuid)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, extensions, pg_temp AS $$
+DECLARE ctx text := current_setting('app.ctx', true); parts text[]; sec text; expected text;
+BEGIN
+  tenant_id := NULL; user_id := NULL;
+  IF ctx IS NULL OR ctx = '' THEN RETURN; END IF;
+  parts := string_to_array(ctx, '.');
+  IF array_length(parts, 1) <> 5 OR parts[1] <> 'v1' OR parts[4] !~ '^[0-9]{1,12}$' THEN RETURN; END IF;
+  IF parts[2] !~* '^[0-9a-f-]{36}$' OR parts[3] !~* '^[0-9a-f-]{36}$' THEN RETURN; END IF;
+  IF parts[4]::bigint < extract(epoch FROM clock_timestamp())::bigint THEN RETURN; END IF;
+  SELECT secret INTO sec FROM public.nova_context_secret WHERE id = 1;
+  IF sec IS NULL THEN RETURN; END IF;
+  expected := encode(hmac(parts[1] || '.' || parts[2] || '.' || parts[3] || '.' || parts[4], sec, 'sha256'), 'hex');
+  IF expected <> lower(parts[5]) THEN RETURN; END IF;
+  tenant_id := parts[2]::uuid;
+  user_id := NULLIF(parts[3], '00000000-0000-0000-0000-000000000000')::uuid;
+END $$;
+
+CREATE OR REPLACE FUNCTION nova_is_jwt_session() RETURNS boolean
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
+  SELECT current_user = 'authenticated' OR session_user = 'authenticator'
+$$;
+
 CREATE OR REPLACE FUNCTION nova_current_tenant() RETURNS uuid
-LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(NULLIF(current_setting('app.tenant_id', true), ''),
-                  nova_jwt_claim('tenant_id'))::uuid
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
+  SELECT CASE WHEN nova_is_jwt_session() THEN nova_jwt_claim('tenant_id')::uuid
+              ELSE (nova_verified_context()).tenant_id END
 $$;
 
 CREATE OR REPLACE FUNCTION nova_current_user() RETURNS uuid
-LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(NULLIF(current_setting('app.user_id', true), ''),
-                  nova_jwt_claim('nova_user_id'))::uuid
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
+  SELECT CASE WHEN nova_is_jwt_session() THEN nova_jwt_claim('nova_user_id')::uuid
+              ELSE (nova_verified_context()).user_id END
+$$;
+
+-- True only for a superuser with no session context (migrations / seeding).
+CREATE OR REPLACE FUNCTION nova_is_owner_maintenance() RETURNS boolean
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
+  SELECT nova_current_user() IS NULL
+     AND COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)
 $$;
 
 -- ---------------------------------------------------------------------
@@ -53,9 +105,32 @@ CREATE TABLE IF NOT EXISTS nova_chart_rules (
  tb_clearance_days integer NOT NULL DEFAULT 7,          -- R9-10-707: before or within 7 calendar days of admission
  note_late_entry_hours integer NOT NULL DEFAULT 24,      -- agency policy
  record_retrieval_max_hours integer NOT NULL DEFAULT 24, -- R9-10-712(A)(6): agency must set this
- require_note_cosign_roles text[] NOT NULL DEFAULT '{}',
+ require_note_cosign_roles text[] NOT NULL DEFAULT '{}',   -- credentials whose notes always need a cosign
+ facility_timezone text NOT NULL DEFAULT 'America/Phoenix',
  updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE nova_chart_rules ADD COLUMN IF NOT EXISTS facility_timezone text NOT NULL DEFAULT 'America/Phoenix';
+
+-- Staff roster: who may prescribe, verify orders, give meds, supervise (C6).
+-- Maintained by agency administrators through a service path; read-only to app users.
+CREATE TABLE IF NOT EXISTS nova_staff_credentials (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ tenant_id uuid NOT NULL REFERENCES nova_tenants(id),
+ user_id uuid NOT NULL UNIQUE REFERENCES nova_users(id),
+ credential text NOT NULL,                       -- e.g. MD, PMHNP, RN, LPN, BHP, BHT
+ may_prescribe boolean NOT NULL DEFAULT false,
+ may_verify_orders boolean NOT NULL DEFAULT false,
+ may_administer_medication boolean NOT NULL DEFAULT false,
+ may_assist_self_administration boolean NOT NULL DEFAULT false,
+ may_supervise boolean NOT NULL DEFAULT false,
+ active boolean NOT NULL DEFAULT true,
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION nova_staff(p_user uuid) RETURNS nova_staff_credentials
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
+  SELECT * FROM nova_staff_credentials WHERE user_id = p_user AND active
+$$;
 
 -- ---------------------------------------------------------------------
 -- Append-only chart audit
@@ -75,11 +150,11 @@ CREATE TABLE IF NOT EXISTS nova_chart_audit (
 CREATE INDEX IF NOT EXISTS idx_chart_audit_row ON nova_chart_audit(tenant_id, table_name, row_id, occurred_at);
 
 CREATE OR REPLACE FUNCTION nova_chart_audit_fn() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE r jsonb := to_jsonb(COALESCE(NEW, OLD));
 BEGIN
-  INSERT INTO nova_chart_audit(tenant_id, table_name, row_id, operation, actor_user_id, old_row, new_row)
-  VALUES ((r->>'tenant_id')::uuid, TG_TABLE_NAME, (r->>'id')::uuid, TG_OP, nova_current_user(),
+  INSERT INTO public.nova_chart_audit(tenant_id, table_name, row_id, operation, actor_user_id, db_role, old_row, new_row)
+  VALUES ((r->>'tenant_id')::uuid, TG_TABLE_NAME, (r->>'id')::uuid, TG_OP, public.nova_current_user(), session_user::text,
           CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END,
           CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END);
   RETURN NULL;
@@ -91,22 +166,48 @@ END $$;
 -- (e.g. a PRN effect assessment recorded later).
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION nova_chart_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+-- TG_ARGV entries:
+--   'col'                 column that may be filled in ONCE after signing (NULL -> value)
+--   'col=a>b,b>c'         column that may change after signing, only by these transitions
 DECLARE
-  allow text[] := COALESCE(TG_ARGV::text[], '{}') || ARRAY['updated_at'];
-  k text;
   me uuid := nova_current_user();
+  maint boolean := nova_is_owner_maintenance();
+  fill text[] := '{}'; trans jsonb := '{}'; arg text; col text; k text;
+  o jsonb; n jsonb; skip text[]; pair text;
+  other_signer_ok boolean := TG_TABLE_NAME IN ('nova_clinical_orders','nova_medication_orders','nova_admissions','nova_diagnostic_reports');
 BEGIN
+  FOREACH arg IN ARRAY COALESCE(TG_ARGV::text[], '{}') LOOP
+    IF position('=' IN arg) > 0 THEN
+      trans := trans || jsonb_build_object(split_part(arg,'=',1), to_jsonb(string_to_array(split_part(arg,'=',2), ',')));
+    ELSE fill := fill || arg; END IF;
+  END LOOP;
+  IF me IS NULL AND NOT maint THEN
+    RAISE EXCEPTION 'NO_SESSION_USER: a verified session user is required';
+  END IF;
+
   IF TG_OP = 'DELETE' THEN
     IF OLD.authenticated_at IS NOT NULL THEN
       RAISE EXCEPTION 'CHART_LOCKED: signed % record % cannot be deleted; file an amendment', TG_TABLE_NAME, OLD.id;
     END IF;
+    IF NOT maint AND OLD.entered_by IS DISTINCT FROM me THEN
+      RAISE EXCEPTION 'NOT_AUTHOR: only the author can delete an unsigned draft';
+    END IF;
     RETURN OLD;
+  END IF;
+
+  n := to_jsonb(NEW);
+  -- admission must belong to the same resident
+  IF n ? 'admission_id' AND n ? 'patient_id' AND n->>'admission_id' IS NOT NULL THEN
+    IF NOT EXISTS (SELECT 1 FROM nova_admissions x WHERE x.id = (n->>'admission_id')::uuid
+                   AND x.patient_id = (n->>'patient_id')::uuid AND x.tenant_id = NEW.tenant_id) THEN
+      RAISE EXCEPTION 'WRONG_RESIDENT: admission does not belong to this resident';
+    END IF;
   END IF;
 
   IF TG_OP = 'INSERT' THEN
     NEW.created_at := now();
-    IF NEW.entered_by IS NULL THEN NEW.entered_by := me; END IF;
+    NEW.entered_by := me;                          -- never trust a submitted author
     IF NEW.authenticated_by IS NOT NULL THEN
       IF me IS NULL OR NEW.authenticated_by <> me THEN
         RAISE EXCEPTION 'SIGNATURE_NOT_OWN: only the signed-in user can apply their own signature';
@@ -119,6 +220,7 @@ BEGIN
   END IF;
 
   -- UPDATE
+  o := to_jsonb(OLD);
   NEW.created_at := OLD.created_at;
   NEW.entered_by := OLD.entered_by;
   IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.id IS DISTINCT FROM OLD.id THEN
@@ -128,18 +230,41 @@ BEGIN
   IF OLD.authenticated_at IS NOT NULL THEN
     NEW.authenticated_by := OLD.authenticated_by;
     NEW.authenticated_at := OLD.authenticated_at;
-    IF (to_jsonb(NEW) - allow) IS DISTINCT FROM (to_jsonb(OLD) - allow) THEN
+    n := to_jsonb(NEW);
+    SELECT array_agg(x) INTO skip FROM (SELECT unnest(fill) x UNION SELECT jsonb_object_keys(trans) UNION SELECT 'updated_at') s;
+    IF (n - skip) IS DISTINCT FROM (o - skip) THEN
       RAISE EXCEPTION 'CHART_LOCKED: % record % is signed; file an amendment instead', TG_TABLE_NAME, OLD.id;
     END IF;
-    FOREACH k IN ARRAY allow LOOP
-      IF k <> 'updated_at' AND (to_jsonb(OLD)->>k) IS NOT NULL
-         AND (to_jsonb(OLD)->k) IS DISTINCT FROM (to_jsonb(NEW)->k) THEN
+    FOREACH k IN ARRAY fill LOOP
+      IF (o->>k) IS NOT NULL AND (o->k) IS DISTINCT FROM (n->k) THEN
         RAISE EXCEPTION 'CHART_LOCKED: % already recorded on % %', k, TG_TABLE_NAME, OLD.id;
+      END IF;
+    END LOOP;
+    FOR col IN SELECT jsonb_object_keys(trans) LOOP
+      IF (o->col) IS DISTINCT FROM (n->col) THEN
+        pair := COALESCE(o->>col,'null') || '>' || COALESCE(n->>col,'null');
+        IF NOT (trans->col) ? pair THEN
+          RAISE EXCEPTION 'CHART_TRANSITION: % cannot change from % to % on a signed record', col, o->>col, n->>col;
+        END IF;
       END IF;
     END LOOP;
     RETURN NEW;
   END IF;
 
+  -- unsigned row
+  IF NOT maint AND OLD.entered_by IS DISTINCT FROM me THEN
+    -- someone other than the author may only apply their own signature, on tables built for it
+    IF NEW.authenticated_by IS NULL
+       OR (n - ARRAY['authenticated_by','authenticated_at','updated_at']) IS DISTINCT FROM (o - ARRAY['authenticated_by','authenticated_at','updated_at']) THEN
+      RAISE EXCEPTION 'NOT_AUTHOR: only the author can change an unsigned draft';
+    END IF;
+    IF NOT other_signer_ok THEN
+      RAISE EXCEPTION 'SIGN_NOT_AUTHOR: only the author can sign this record';
+    END IF;
+    IF TG_TABLE_NAME = 'nova_admissions' AND (n->>'authenticated_by') IS DISTINCT FROM (o->>'admitting_professional_user_id') THEN
+      RAISE EXCEPTION 'SIGN_NOT_AUTHOR: an admission is signed by its author or the admitting professional';
+    END IF;
+  END IF;
   IF NEW.authenticated_by IS NOT NULL THEN
     IF me IS NULL OR NEW.authenticated_by <> me THEN
       RAISE EXCEPTION 'SIGNATURE_NOT_OWN: only the signed-in user can apply their own signature';
@@ -153,7 +278,7 @@ END $$;
 
 -- Helper to attach guard + audit triggers to a chart table
 CREATE OR REPLACE FUNCTION nova_chart_attach(p_table text, p_allow text[] DEFAULT '{}') RETURNS void
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 DECLARE args text := '';
 BEGIN
   IF array_length(p_allow,1) IS NOT NULL THEN
@@ -167,7 +292,7 @@ END $$;
 
 -- Sign any chart record as the current user
 CREATE OR REPLACE FUNCTION nova_sign(p_table regclass, p_id uuid) RETURNS timestamptz
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 DECLARE t timestamptz;
 BEGIN
   IF nova_current_user() IS NULL THEN RAISE EXCEPTION 'NO_SESSION_USER'; END IF;
@@ -452,19 +577,35 @@ CREATE INDEX IF NOT EXISTS idx_clinical_notes_adm ON nova_clinical_notes(tenant_
 
 -- AI drafts must be signed by a human who did not just rubber-stamp an empty field
 CREATE OR REPLACE FUNCTION nova_note_rules() RETURNS trigger
-LANGUAGE plpgsql AS $$
-DECLARE me uuid := nova_current_user();
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE me uuid := nova_current_user(); rules nova_chart_rules; cred text; author uuid;
 BEGIN
-  IF TG_OP = 'UPDATE' AND OLD.cosigned_by IS NULL AND NEW.cosigned_by IS NOT NULL THEN
+  SELECT * INTO rules FROM nova_chart_rules WHERE tenant_id = NEW.tenant_id;
+  author := CASE WHEN TG_OP = 'INSERT' THEN me ELSE OLD.entered_by END;
+  SELECT credential INTO cred FROM nova_staff_credentials WHERE user_id = author AND active;
+  IF cred IS NOT NULL AND cred = ANY(COALESCE(rules.require_note_cosign_roles, '{}')) THEN
+    NEW.requires_cosign := true;                         -- policy, not the author's choice
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    NEW.cosigned_by := NULL; NEW.cosigned_at := NULL;
+    RETURN NEW;
+  END IF;
+  IF OLD.requires_cosign AND NOT NEW.requires_cosign AND OLD.authenticated_at IS NULL THEN
+    RAISE EXCEPTION 'COSIGN_REQUIRED: a required cosign cannot be removed';
+  END IF;
+  IF OLD.cosigned_by IS NULL AND NEW.cosigned_by IS NOT NULL THEN
     IF OLD.authenticated_at IS NULL THEN RAISE EXCEPTION 'COSIGN_BEFORE_SIGN: author must sign first'; END IF;
-    IF NEW.cosigned_by <> me THEN RAISE EXCEPTION 'SIGNATURE_NOT_OWN: cosigner must be the signed-in user'; END IF;
+    IF NEW.cosigned_by IS DISTINCT FROM me THEN RAISE EXCEPTION 'SIGNATURE_NOT_OWN: cosigner must be the signed-in user'; END IF;
     IF NEW.cosigned_by = OLD.authenticated_by THEN RAISE EXCEPTION 'COSIGN_SELF: author cannot cosign own note'; END IF;
+    IF NOT COALESCE((nova_staff(me)).may_supervise, false) THEN RAISE EXCEPTION 'COSIGN_NOT_SUPERVISOR: cosigner is not a supervisor on the staff roster'; END IF;
     NEW.cosigned_at := now();
+  ELSIF NEW.cosigned_at IS DISTINCT FROM OLD.cosigned_at OR NEW.cosigned_by IS DISTINCT FROM OLD.cosigned_by THEN
+    RAISE EXCEPTION 'COSIGN_FORGED: cosign time/person can only be set by cosigning';
   END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS a_note_rules ON nova_clinical_notes;
-CREATE TRIGGER a_note_rules BEFORE UPDATE ON nova_clinical_notes FOR EACH ROW EXECUTE FUNCTION nova_note_rules();
+CREATE TRIGGER a_note_rules BEFORE INSERT OR UPDATE ON nova_clinical_notes FOR EACH ROW EXECUTE FUNCTION nova_note_rules();
 
 -- Amendments / late corrections (original stays readable)
 CREATE TABLE IF NOT EXISTS nova_chart_amendments (
@@ -506,12 +647,18 @@ CREATE TABLE IF NOT EXISTS nova_clinical_orders (
 );
 
 CREATE OR REPLACE FUNCTION nova_order_rules() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
-  IF NEW.authenticated_by IS NOT NULL
-     AND (TG_OP = 'INSERT' OR OLD.authenticated_by IS NULL)
-     AND NEW.authenticated_by IS DISTINCT FROM NEW.issuing_practitioner_user_id THEN
-    RAISE EXCEPTION 'ORDER_AUTH: an order must be authenticated by the practitioner who issued it';
+  IF NEW.authenticated_by IS NOT NULL AND (TG_OP = 'INSERT' OR OLD.authenticated_by IS NULL) THEN
+    IF NEW.authenticated_by IS DISTINCT FROM NEW.issuing_practitioner_user_id THEN
+      RAISE EXCEPTION 'ORDER_AUTH: an order must be authenticated by the practitioner who issued it';
+    END IF;
+    IF NOT COALESCE((nova_staff(NEW.authenticated_by)).may_prescribe, false) THEN
+      RAISE EXCEPTION 'ORDER_AUTH_NOT_PRESCRIBER: issuer is not a prescriber on the staff roster';
+    END IF;
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD.discontinued_at IS NULL AND NEW.discontinued_at IS NOT NULL THEN
+    NEW.discontinued_at := now();
   END IF;
   RETURN NEW;
 END $$;
@@ -568,6 +715,7 @@ CREATE TABLE IF NOT EXISTS nova_medication_administrations (
  effect_assessed_at timestamptz,
  effect_assessed_by uuid REFERENCES nova_users(id),
  adverse_reaction text,                                   -- may be recorded after signing
+ variance_note text,                                      -- any difference from the order, explained
  administered_by_name text NOT NULL,
  professional_designation text NOT NULL,                  -- e.g., RN, LPN, BHT
  entered_by uuid REFERENCES nova_users(id),
@@ -576,43 +724,159 @@ CREATE TABLE IF NOT EXISTS nova_medication_administrations (
  authenticated_at timestamptz,
  CHECK (outcome IN ('given','self_administered_with_assistance') OR reason_not_given IS NOT NULL)
 );
+ALTER TABLE nova_medication_administrations ADD COLUMN IF NOT EXISTS variance_note text;
 CREATE INDEX IF NOT EXISTS idx_mar_adm ON nova_medication_administrations(tenant_id, admission_id, administered_at);
 
 CREATE OR REPLACE FUNCTION nova_mar_rules() RETURNS trigger
-LANGUAGE plpgsql AS $$
-DECLARE o nova_medication_orders; initial boolean;
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE o nova_medication_orders; co nova_clinical_orders; st nova_staff_credentials; tz text; given_today integer;
+        initial boolean; is_given boolean; me uuid := nova_current_user();
 BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.effect_assessment IS NULL AND NEW.effect_assessment IS NOT NULL THEN
+      NEW.effect_assessed_at := now();
+      NEW.effect_assessed_by := me;
+    ELSIF NEW.effect_assessed_at IS DISTINCT FROM OLD.effect_assessed_at OR NEW.effect_assessed_by IS DISTINCT FROM OLD.effect_assessed_by THEN
+      RAISE EXCEPTION 'MAR_FORGED: effect time/person is set only when the effect is recorded';
+    END IF;
+    RETURN NEW;
+  END IF;
+
   SELECT * INTO o FROM nova_medication_orders WHERE id = NEW.medication_order_id;
   IF o.id IS NULL THEN RAISE EXCEPTION 'MAR_ORDER: medication order not found'; END IF;
   IF o.patient_id <> NEW.patient_id OR o.admission_id <> NEW.admission_id THEN
     RAISE EXCEPTION 'MAR_WRONG_RESIDENT: order belongs to a different resident/admission';
   END IF;
-  IF TG_OP = 'INSERT' THEN
-    IF o.authenticated_at IS NULL THEN RAISE EXCEPTION 'MAR_UNVERIFIED_ORDER: order transcription not verified/signed'; END IF;
-    IF o.status <> 'active' THEN RAISE EXCEPTION 'MAR_INACTIVE_ORDER: order is %', o.status; END IF;
-    NEW.medication_name := o.medication_name; NEW.strength := o.strength; NEW.route := COALESCE(NEW.route, o.route);
-    IF NEW.outcome IN ('given','self_administered_with_assistance') THEN
-      SELECT NOT EXISTS (SELECT 1 FROM nova_medication_administrations m
-                         WHERE m.medication_order_id = o.id AND m.outcome IN ('given','self_administered_with_assistance'))
-        INTO initial;
-      IF (o.is_prn OR initial) AND o.is_psychotropic AND NULLIF(trim(NEW.pre_behavior_assessment),'') IS NULL THEN
-        RAISE EXCEPTION 'MAR_ASSESSMENT: psychotropic given % requires a pre-administration behavior assessment',
-          CASE WHEN o.is_prn THEN 'PRN' ELSE 'initially' END;
-      END IF;
-      IF (o.is_prn OR initial) AND o.is_pain_medication AND NULLIF(trim(NEW.pre_pain_assessment),'') IS NULL THEN
-        RAISE EXCEPTION 'MAR_ASSESSMENT: pain medication given % requires a pre-administration pain assessment',
-          CASE WHEN o.is_prn THEN 'PRN' ELSE 'initially' END;
+  IF o.authenticated_at IS NULL THEN RAISE EXCEPTION 'MAR_UNVERIFIED_ORDER: order transcription not verified/signed'; END IF;
+  SELECT * INTO co FROM nova_clinical_orders WHERE id = o.clinical_order_id;
+  IF co.id IS NULL OR co.authenticated_at IS NULL OR co.patient_id <> o.patient_id THEN
+    RAISE EXCEPTION 'MAR_UNAUTHENTICATED_ORDER: the prescriber order is not authenticated for this resident';
+  END IF;
+  IF co.discontinued_at IS NOT NULL THEN RAISE EXCEPTION 'MAR_INACTIVE_ORDER: prescriber order discontinued'; END IF;
+  IF o.status <> 'active' THEN RAISE EXCEPTION 'MAR_INACTIVE_ORDER: order is %', o.status; END IF;
+
+  SELECT COALESCE((SELECT facility_timezone FROM nova_chart_rules WHERE tenant_id = NEW.tenant_id), 'America/Phoenix') INTO tz;
+  IF NEW.administered_at > now() + interval '5 minutes' THEN RAISE EXCEPTION 'MAR_TIME: administration time is in the future'; END IF;
+  IF (NEW.administered_at AT TIME ZONE tz)::date < o.start_date
+     OR (o.stop_date IS NOT NULL AND (NEW.administered_at AT TIME ZONE tz)::date > o.stop_date) THEN
+    RAISE EXCEPTION 'MAR_OUTSIDE_ORDER_DATES: order runs % to %', o.start_date, COALESCE(o.stop_date::text,'open');
+  END IF;
+
+  is_given := NEW.outcome IN ('given','self_administered_with_assistance');
+  -- what was given comes from the verified order, never free text
+  NEW.medication_name := o.medication_name; NEW.strength := o.strength;
+  NEW.dose_given := CASE WHEN is_given THEN o.dose ELSE '0' END;
+  NEW.route := o.route;
+
+  -- staff identity and designation come from the roster
+  st := nova_staff(me);
+  IF st.id IS NULL THEN RAISE EXCEPTION 'MAR_NOT_PERMITTED: you are not on the staff roster'; END IF;
+  IF NEW.outcome = 'self_administered_with_assistance' THEN
+    IF NOT (st.may_assist_self_administration OR st.may_administer_medication) THEN
+      RAISE EXCEPTION 'MAR_NOT_PERMITTED: not permitted to assist with self-administration';
+    END IF;
+  ELSIF NOT st.may_administer_medication AND NOT st.may_assist_self_administration THEN
+    RAISE EXCEPTION 'MAR_NOT_PERMITTED: not permitted to document medication administration';
+  ELSIF NEW.outcome = 'given' AND NOT st.may_administer_medication THEN
+    RAISE EXCEPTION 'MAR_NOT_PERMITTED: not permitted to administer medication';
+  END IF;
+  NEW.professional_designation := st.credential;
+  SELECT COALESCE(display_name, email, external_subject) INTO NEW.administered_by_name FROM nova_users WHERE id = me;
+
+  IF is_given THEN
+    SELECT NOT EXISTS (SELECT 1 FROM nova_medication_administrations m
+                       WHERE m.medication_order_id = o.id AND m.outcome IN ('given','self_administered_with_assistance'))
+      INTO initial;
+    IF (o.is_prn OR initial) AND o.is_psychotropic AND NULLIF(trim(NEW.pre_behavior_assessment),'') IS NULL THEN
+      RAISE EXCEPTION 'MAR_ASSESSMENT: psychotropic given % requires a pre-administration behavior assessment',
+        CASE WHEN o.is_prn THEN 'PRN' ELSE 'initially' END;
+    END IF;
+    IF (o.is_prn OR initial) AND o.is_pain_medication AND NULLIF(trim(NEW.pre_pain_assessment),'') IS NULL THEN
+      RAISE EXCEPTION 'MAR_ASSESSMENT: pain medication given % requires a pre-administration pain assessment',
+        CASE WHEN o.is_prn THEN 'PRN' ELSE 'initially' END;
+    END IF;
+    IF o.is_prn AND o.prn_max_doses_per_day IS NOT NULL THEN
+      SELECT count(*) INTO given_today FROM nova_medication_administrations m
+       WHERE m.medication_order_id = o.id AND m.outcome IN ('given','self_administered_with_assistance')
+         AND (m.administered_at AT TIME ZONE tz)::date = (NEW.administered_at AT TIME ZONE tz)::date;
+      IF given_today >= o.prn_max_doses_per_day THEN
+        RAISE EXCEPTION 'MAR_PRN_DAILY_MAX: % of % PRN doses already given that day', given_today, o.prn_max_doses_per_day;
       END IF;
     END IF;
   END IF;
-  IF TG_OP = 'UPDATE' AND OLD.effect_assessment IS NULL AND NEW.effect_assessment IS NOT NULL THEN
-    NEW.effect_assessed_at := now();
-    NEW.effect_assessed_by := nova_current_user();
+  IF NEW.authenticated_by IS NULL THEN
+    RAISE EXCEPTION 'MAR_UNSIGNED: an administration must be signed when it is recorded';
   END IF;
+  NEW.effect_assessment := NULL; NEW.effect_assessed_at := NULL; NEW.effect_assessed_by := NULL;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS a_mar_rules ON nova_medication_administrations;
 CREATE TRIGGER a_mar_rules BEFORE INSERT OR UPDATE ON nova_medication_administrations FOR EACH ROW EXECUTE FUNCTION nova_mar_rules();
+
+-- Medication order (transcription) rules: tied to an authenticated prescriber order
+-- for the same resident; verified by rostered staff.
+CREATE OR REPLACE FUNCTION nova_medorder_rules() RETURNS trigger
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE co nova_clinical_orders;
+BEGIN
+  SELECT * INTO co FROM nova_clinical_orders WHERE id = NEW.clinical_order_id;
+  IF co.id IS NULL OR co.patient_id <> NEW.patient_id OR co.admission_id <> NEW.admission_id OR co.order_kind <> 'medication' THEN
+    RAISE EXCEPTION 'MEDORDER_SOURCE: must reference a medication order for the same resident and admission';
+  END IF;
+  IF NEW.authenticated_by IS NOT NULL AND (TG_OP = 'INSERT' OR OLD.authenticated_by IS NULL) THEN
+    IF co.authenticated_at IS NULL THEN
+      RAISE EXCEPTION 'MEDORDER_UNAUTHENTICATED: prescriber must authenticate the order before it is verified';
+    END IF;
+    IF NOT COALESCE((nova_staff(NEW.authenticated_by)).may_verify_orders, false) THEN
+      RAISE EXCEPTION 'MEDORDER_NOT_PERMITTED: verifier is not permitted to verify orders';
+    END IF;
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.status IN ('discontinued','completed') AND OLD.status NOT IN ('discontinued','completed') THEN
+    NEW.stop_date := COALESCE(OLD.stop_date, current_date);
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS a_medorder_rules ON nova_medication_orders;
+CREATE TRIGGER a_medorder_rules BEFORE INSERT OR UPDATE ON nova_medication_orders FOR EACH ROW EXECUTE FUNCTION nova_medorder_rules();
+
+-- Admission discharge is attested by the person who discharges (C8)
+CREATE OR REPLACE FUNCTION nova_admission_rules() RETURNS trigger
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  IF NEW.status = 'discharged' AND OLD.status IS DISTINCT FROM 'discharged' THEN
+    NEW.discharge_authenticated_by := nova_current_user();
+    NEW.discharged_at := COALESCE(NEW.discharged_at, now());
+    IF NEW.discharged_at > now() + interval '5 minutes' THEN RAISE EXCEPTION 'DISCHARGE_TIME: discharge time is in the future'; END IF;
+  ELSIF NEW.discharge_authenticated_by IS DISTINCT FROM OLD.discharge_authenticated_by THEN
+    RAISE EXCEPTION 'DISCHARGE_FORGED: discharge attestation is set only when discharging';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS a_admission_rules ON nova_admissions;
+CREATE TRIGGER a_admission_rules BEFORE UPDATE ON nova_admissions FOR EACH ROW EXECUTE FUNCTION nova_admission_rules();
+
+-- Amendments: real visible target for the same resident; corrections only by the author or a supervisor
+CREATE OR REPLACE FUNCTION nova_amendment_rules() RETURNS trigger
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE t_patient uuid; t_author uuid; me uuid := nova_current_user();
+BEGIN
+  IF NEW.target_table NOT IN ('nova_clinical_notes','nova_bh_assessments','nova_treatment_plans','nova_history_physicals',
+       'nova_medication_administrations','nova_emergency_safety_responses','nova_time_outs','nova_incident_reports',
+       'nova_discharges','nova_consents','nova_resident_profiles','nova_admissions','nova_tb_screenings') THEN
+    RAISE EXCEPTION 'AMENDMENT_TARGET: % cannot be amended', NEW.target_table;
+  END IF;
+  EXECUTE format('SELECT patient_id, entered_by FROM %I WHERE id = $1', NEW.target_table) INTO t_patient, t_author USING NEW.target_id;
+  IF t_patient IS NULL THEN RAISE EXCEPTION 'AMENDMENT_TARGET: record not found'; END IF;
+  IF t_patient <> NEW.patient_id THEN RAISE EXCEPTION 'WRONG_RESIDENT: amendment resident does not match the record'; END IF;
+  IF NEW.amendment_type IN ('correction','entered_in_error') AND t_author IS DISTINCT FROM me
+     AND NOT COALESCE((nova_staff(me)).may_supervise, false) THEN
+    RAISE EXCEPTION 'AMENDMENT_NOT_AUTHOR: only the author or a supervisor can correct or void a record';
+  END IF;
+  IF NEW.authenticated_by IS NULL THEN RAISE EXCEPTION 'AMENDMENT_UNSIGNED: an amendment must be signed when entered'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS a_amendment_rules ON nova_chart_amendments;
+CREATE TRIGGER a_amendment_rules BEFORE INSERT ON nova_chart_amendments FOR EACH ROW EXECUTE FUNCTION nova_amendment_rules();
 
 -- 15. Emergency safety response — R9-10-712(C)
 CREATE TABLE IF NOT EXISTS nova_emergency_safety_responses (
@@ -772,7 +1036,7 @@ CREATE TABLE IF NOT EXISTS nova_claim_lines (
 -- Pre-submission checks: every line must be backed by signed documentation
 CREATE OR REPLACE FUNCTION nova_claim_validate(p_claim_id uuid)
 RETURNS TABLE(severity text, line_number integer, issue text)
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
   SELECT 'error', NULL::integer, 'Claim has no service lines'
   WHERE NOT EXISTS (SELECT 1 FROM nova_claim_lines WHERE claim_id = p_claim_id)
   UNION ALL
@@ -812,19 +1076,19 @@ $$;
 DO $attach$ BEGIN
   PERFORM nova_chart_attach('nova_resident_profiles');
   PERFORM nova_chart_attach('nova_resident_allergies');
-  PERFORM nova_chart_attach('nova_admissions', ARRAY['status','discharged_at','discharge_authenticated_by']);
-  PERFORM nova_chart_attach('nova_resident_representatives', ARRAY['active']);
+  PERFORM nova_chart_attach('nova_admissions', ARRAY['status=pending>active,active>discharged,pending>cancelled','discharged_at','discharge_authenticated_by']);
+  PERFORM nova_chart_attach('nova_resident_representatives', ARRAY['active=true>false']);
   PERFORM nova_chart_attach('nova_consents', ARRAY['revoked_on']);
   PERFORM nova_chart_attach('nova_health_care_directives');
   PERFORM nova_chart_attach('nova_history_physicals');
   PERFORM nova_chart_attach('nova_tb_screenings');
   PERFORM nova_chart_attach('nova_bh_assessments');
-  PERFORM nova_chart_attach('nova_treatment_plans', ARRAY['status']);
-  PERFORM nova_chart_attach('nova_treatment_plan_goals', ARRAY['status']);
+  PERFORM nova_chart_attach('nova_treatment_plans', ARRAY['status=draft>active,active>superseded']);
+  PERFORM nova_chart_attach('nova_treatment_plan_goals', ARRAY['status=active>met,active>revised,active>discontinued']);
   PERFORM nova_chart_attach('nova_clinical_notes', ARRAY['cosigned_by','cosigned_at']);
   PERFORM nova_chart_attach('nova_chart_amendments');
   PERFORM nova_chart_attach('nova_clinical_orders', ARRAY['discontinued_at']);
-  PERFORM nova_chart_attach('nova_medication_orders', ARRAY['status','stop_date']);
+  PERFORM nova_chart_attach('nova_medication_orders', ARRAY['status=active>held,held>active,active>discontinued,held>discontinued,active>completed','stop_date']);
   PERFORM nova_chart_attach('nova_medication_administrations',
     ARRAY['effect_assessment','effect_assessed_at','effect_assessed_by','adverse_reaction']);
   PERFORM nova_chart_attach('nova_emergency_safety_responses', ARRAY['representative_notified_at','resident_debriefed']);
@@ -846,7 +1110,7 @@ CREATE TRIGGER zz_chart_audit AFTER INSERT OR UPDATE OR DELETE ON nova_claim_lin
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION nova_chart_completeness(p_admission_id uuid)
 RETURNS TABLE(requirement_code text, citation text, requirement text, status text, detail text)
-LANGUAGE plpgsql STABLE AS $$
+LANGUAGE plpgsql STABLE SET search_path = public, pg_temp AS $$
 #variable_conflict use_column
 DECLARE
   a nova_admissions; p nova_resident_profiles; rules nova_chart_rules;
@@ -979,14 +1243,18 @@ BEGIN
 END $$;
 
 -- Chart-level summary for dashboards
-CREATE OR REPLACE VIEW nova_chart_status WITH (security_invoker = true) AS
+DROP VIEW IF EXISTS nova_chart_status;
+CREATE VIEW nova_chart_status WITH (security_invoker = true) AS
 SELECT a.tenant_id, a.id AS admission_id, a.patient_id,
        rp.legal_last_name || ', ' || rp.legal_first_name AS resident_name,
        a.status, a.admitted_at,
-       (SELECT count(*) FROM nova_chart_completeness(a.id) c WHERE c.status IN ('missing','overdue')) AS items_missing,
-       (SELECT count(*) FROM nova_chart_completeness(a.id) c WHERE c.status = 'needs_signature') AS items_unsigned
+       c.items_missing, c.items_unsigned
 FROM nova_admissions a
-LEFT JOIN nova_resident_profiles rp ON rp.patient_id = a.patient_id;
+LEFT JOIN nova_resident_profiles rp ON rp.patient_id = a.patient_id
+CROSS JOIN LATERAL (
+  SELECT count(*) FILTER (WHERE x.status IN ('missing','overdue')) AS items_missing,
+         count(*) FILTER (WHERE x.status = 'needs_signature') AS items_unsigned
+  FROM nova_chart_completeness(a.id) x) c;
 
 -- Note writing queue: unsigned and late notes
 CREATE OR REPLACE VIEW nova_note_queue WITH (security_invoker = true) AS

@@ -56,7 +56,7 @@ dialog::backdrop{background:rgb(0 0 0/.35)}
 <div id="toast" role="status" aria-live="polite"></div>
 <script>
 "use strict";
-const S = { me:null, residents:[], admissionId:null, tab:"chart", chart:null, mar:null, marDate:new Date().toISOString().slice(0,10), designation:"", token:null };
+const S = { me:null, residents:[], admissionId:null, tab:"chart", chart:null, mar:null, marDate:new Date().toISOString().slice(0,10), token:null };
 const $ = (s, el=document) => el.querySelector(s);
 
 // --- safe DOM building (never inject user text as HTML) ---
@@ -95,6 +95,14 @@ const FRIENDLY = {
   VALIDATION_FAILED:"Some required information is missing or invalid.",
   FORBIDDEN:"You don't have access to that.",
   USER_NOT_PROVISIONED:"Your login isn't linked to a staff account in this agency.",
+  CHART_TRANSITION:"That status change isn't allowed for a signed record.",
+  SIGN_NOT_AUTHOR:"Only the author can sign this.",
+  NOT_AUTHOR:"Only the author can change this draft.",
+  COSIGN_NOT_SUPERVISOR:"Only a supervisor can cosign.",
+  MAR_NOT_PERMITTED:"Your credential doesn't allow this medication entry.",
+  MAR_PRN_DAILY_MAX:"The PRN daily maximum has already been reached.",
+  MAR_OUTSIDE_ORDER_DATES:"This order isn't active on that date.",
+  AMENDMENT_NOT_AUTHOR:"Only the author or a supervisor can correct or void a record.",
   AUTHENTICATION_REQUIRED:"Please sign in."
 };
 function explain(err){
@@ -103,7 +111,7 @@ function explain(err){
   if (base==="FIELD_REQUIRED") return "Required: " + String(err.error).split(":")[1].replace(/_/g," ");
   if (base==="FIELD_INVALID") return "Check the field: " + String(err.error).split(":")[1].replace(/_/g," ");
   if (base==="POLICY_DENIED") return "Your role isn't allowed to do that.";
-  return FRIENDLY[base] || (err.message ? err.message.split(":").slice(1).join(":").trim() || base : base) || "Request failed.";
+  return FRIENDLY[base] || base.replace(/_/g," ").toLowerCase() || "Request failed.";
 }
 
 async function api(path, opts={}){
@@ -284,6 +292,7 @@ function viewMar(){
     h("span",{class:"chip "+(x.outcome==="given"||x.outcome==="self_administered_with_assistance"?"ok":"warn")}, x.outcome.replace(/_/g," ")),
     ` ${fmtDT(x.administered_at)} · ${x.dose_given} ${x.route} · ${x.administered_by_name}, ${x.professional_designation}`,
     x.reason_not_given ? ` — ${x.reason_not_given}` : "",
+    x.variance_note ? h("div",{style:"color:var(--warn)"},"Variance: "+x.variance_note) : null,
     x.pre_behavior_assessment ? h("div",{class:"dim"},"Before: "+x.pre_behavior_assessment) : null,
     x.pre_pain_assessment ? h("div",{class:"dim"},"Pain before: "+x.pre_pain_assessment) : null,
     x.effect_assessment ? h("div",{class:"dim"},`Effect (${fmtDT(x.effect_assessed_at)}): ${x.effect_assessment}`) : null,
@@ -314,32 +323,30 @@ function giveDialog(o, time){
   const needBehavior = o.is_psychotropic && (o.is_prn || first);
   const needPain = o.is_pain_medication && (o.is_prn || first);
   const outcome = h("select",{}, [["given","Given"],["self_administered_with_assistance","Self-administered with assistance"],["refused","Refused"],["held","Held"],["missed","Missed"],["not_available","Not available"]].map(([v,l])=>h("option",{value:v},l)));
-  const dose = h("input",{value:o.dose}); const route = h("input",{value:o.route});
   const reason = h("input",{placeholder:"Required if not given"});
   const behavior = h("textarea",{placeholder:"Observed behavior/symptoms before giving"});
   const pain = h("textarea",{placeholder:"Pain rating and description before giving"});
-  const desig = h("input",{value:S.designation,placeholder:"RN, LPN, BHT…"});
+  const variance = h("input",{placeholder:"Only if anything differed from the order — explain"});
   const save = async () => {
     const given = outcome.value==="given" || outcome.value==="self_administered_with_assistance";
     if (given && needBehavior && !behavior.value.trim()) return toast("Behavior assessment is required before this dose.");
     if (given && needPain && !pain.value.trim()) return toast("Pain assessment is required before this dose.");
     if (!given && !reason.value.trim()) return toast("Give a reason the dose wasn't given.");
-    S.designation = desig.value.trim();
     let scheduled = null; if (time){ const dt = new Date(S.marDate+"T"+time.slice(0,5)); scheduled = dt.toISOString(); }
     try {
-      await post("/api/chart/mar", { medication_order_id:o.id, outcome:outcome.value, dose_given:given?dose.value:"0", route:route.value,
-        reason_not_given:reason.value, pre_behavior_assessment:behavior.value, pre_pain_assessment:pain.value, professional_designation:desig.value, scheduled_for:scheduled });
+      await post("/api/chart/mar", { medication_order_id:o.id, outcome:outcome.value, reason_not_given:reason.value,
+        pre_behavior_assessment:behavior.value, pre_pain_assessment:pain.value, variance_note:variance.value, scheduled_for:scheduled });
       d.close(); toast("Administration signed and recorded."); refresh();
     } catch(e){ toast(explain(e)); }
   };
   fill(d, h("h3",{}, `${o.medication_name} ${o.strength}${time?` · ${time.slice(0,5)}`:" · PRN"}`),
-    o.is_prn ? h("p",{class:"dim small"},"Indication: "+o.prn_indication) : null,
+    h("p",{class:"small"}, h("b",{},"Order: "), `${o.dose} ${o.route} · ${o.frequency}`, o.is_prn ? ` · for ${o.prn_indication}` : ""),
     S.chart.allergies.length ? h("div",{class:"card allergy small"}, "Allergies: "+S.chart.allergies.map(a=>a.allergen).join(", ")) : null,
-    h("div",{class:"grid"}, field("Outcome",outcome), field("Dose given",dose), field("Route",route), field("Your designation",desig)),
-    field("Reason not given",reason),
+    field("Outcome",outcome), field("Reason not given",reason),
     needBehavior ? field("Behavior assessment before dose (required)",behavior) : null,
     needPain ? field("Pain assessment before dose (required)",pain) : null,
-    h("p",{class:"dim small"},"Saving records the current time and your signature. The entry is then locked."),
+    field("Variance note",variance),
+    h("p",{class:"dim small"},"The dose, route, your name and your credential are recorded from the order and the staff roster. Saving records the current time and your signature; the entry is then locked."),
     h("div",{class:"row",style:"justify-content:flex-end"}, h("button",{class:"btn",onclick:()=>d.close()},"Cancel"), h("button",{class:"btn primary",onclick:save},"Sign & record")));
   d.showModal();
 }

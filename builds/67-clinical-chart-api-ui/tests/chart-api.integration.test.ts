@@ -10,6 +10,7 @@ import { ChartApi, type ChartContext } from "../src/chart-api";
 const databaseUrl = process.env.DATABASE_URL;
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl, max: 6 }) : null;
 const uuid = () => crypto.randomUUID();
+const SECRET = "integration-test-context-secret-0123456789";
 
 // Identities are chosen by a test header standing in for a verified token.
 const T = { a: uuid(), b: uuid() };
@@ -56,20 +57,25 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     SUB["sub-bht-" + U.bht] = { tenant: T.a, role: "clinician" };
     SUB["sub-other-" + U.other] = { tenant: T.b, role: "supervisor" };
     SUB["sub-ghost"] = { tenant: T.a, role: "supervisor" }; // valid token, no staff record
+    await db.query("SELECT nova_set_context_secret($1)", [SECRET]);
+    await db.query(`INSERT INTO nova_staff_credentials(tenant_id,user_id,credential,may_prescribe,may_verify_orders,may_administer_medication,may_assist_self_administration,may_supervise)
+      VALUES ($1,$2,'PMHNP',true,true,true,false,true),($1,$3,'RN',false,true,true,false,true),($1,$4,'BHT',false,false,false,true,false),($5,$6,'RN',false,true,true,false,true)`,
+      [T.a, U.dr, U.rn, U.bht, T.b, U.other]);
     await db.query("INSERT INTO nova_patients(id,tenant_id) VALUES ($1,$2),($3,$4)", [ids.patA, T.a, ids.patB, T.b]);
     await db.query(`INSERT INTO nova_resident_profiles(tenant_id,patient_id,legal_first_name,legal_last_name,date_of_birth,address_line1,allergies_reviewed)
       VALUES ($1,$2,'Jordan','Rivera','1990-04-12','142 E Joan D Arc Ave',true),($3,$4,'Other','Resident','1985-01-01','1 Main',true)`, [T.a, ids.patA, T.b, ids.patB]);
     await db.query(`INSERT INTO nova_admissions(id,tenant_id,patient_id,admitted_at,admitting_professional_name,admitting_professional_credential,presenting_issues)
       VALUES ($1,$2,$3,now()-interval '1 day','Dr. Prescriber','PMHNP','Step-down'),($4,$5,$6,now(),'Doc B','MD','B')`, [ids.admA, T.a, ids.patA, ids.admB, T.b, ids.patB]);
     // Order + verified PRN psychotropic, signed by the right people through the DB session rules.
+    const chartApi = new ChartApi(db, resolve, authorize, { contextSecret: SECRET });
     const c = await db.connect();
     try {
       await c.query("BEGIN"); await c.query("SET LOCAL ROLE nova_app");
-      await c.query("SELECT set_config('app.tenant_id',$1,true), set_config('app.user_id',$2,true)", [T.a, U.dr]);
+      await c.query("SELECT set_config('app.ctx',$1,true)", [chartApi.signContext(T.a, U.dr)]);
       await c.query(`INSERT INTO nova_clinical_orders(id,tenant_id,patient_id,admission_id,order_kind,order_text,order_source,ordered_at,
         issuing_practitioner_user_id,issuing_practitioner_name,issuing_practitioner_credential,authenticated_by)
         VALUES ($1,$2,$3,$4,'medication','Hydroxyzine 25 mg PO q6h PRN anxiety','electronic',now(),$5,'Dr. Prescriber','PMHNP',$5)`, [ids.orderA, T.a, ids.patA, ids.admA, U.dr]);
-      await c.query("SELECT set_config('app.user_id',$1,true)", [U.rn]);
+      await c.query("SELECT set_config('app.ctx',$1,true)", [chartApi.signContext(T.a, U.rn)]);
       await c.query(`INSERT INTO nova_medication_orders(id,tenant_id,patient_id,admission_id,clinical_order_id,medication_name,strength,dose,route,frequency,
         is_prn,prn_indication,prn_max_doses_per_day,is_psychotropic,start_date,authenticated_by)
         VALUES ($1,$2,$3,$4,$5,'Hydroxyzine HCl','25 mg','25 mg','PO','q6h PRN',true,'anxiety',4,true,current_date - 1,$6)`, [ids.medPrn, T.a, ids.patA, ids.admA, ids.orderA, U.rn]);
@@ -77,7 +83,7 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     } finally { c.release(); }
 
     const api = new RecoveryOperationsApi(async () => null, {} as never, {} as never);
-    server = createRecoveryHttpServer({ api, chartApi: new ChartApi(db, resolve, authorize), allowedOrigin: origin });
+    server = createRecoveryHttpServer({ api, chartApi, allowedOrigin: origin });
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     const addr = server.address(); if (!addr || typeof addr === "string") throw new Error("NO_ADDRESS");
     base = `http://127.0.0.1:${addr.port}`;
@@ -90,7 +96,10 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
   it("serves the chart screen with security headers", async () => {
     const r = await fetch(base + "/chart");
     expect(r.status).toBe(200);
-    expect(r.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    const csp = r.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toMatch(/script-src 'sha256-[A-Za-z0-9+/=]+'/);
+    expect(csp).not.toContain("script-src 'unsafe-inline'");
     expect(await r.text()).toContain("NovaCärïs Chart");
   });
 
@@ -126,7 +135,7 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     const signed = await call(bht(), "POST", `/api/chart/notes/${noteId}/sign`);
     expect(signed.status).toBe(200); expect(signed.body.item.signed_at).toBeTruthy();
     const locked = await call(bht(), "POST", `/api/chart/notes/${noteId}`, { note_type: "progress", service_date: "2026-11-10", narrative: "Trying to rewrite a signed note afterwards." });
-    expect(locked.status).toBe(409); expect(locked.body.error).toBe("CHART_LOCKED");
+    expect(locked.body.error).toBe("CHART_LOCKED"); expect(locked.status).toBe(409);
   });
 
   it("cosign is role-gated and cannot be done by the author", async () => {
@@ -145,14 +154,18 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     expect(chart.body.item.amendments.some((m: any) => m.target_id === noteId)).toBe(true);
   });
 
-  it("MAR pass: PRN psychotropic needs a pre-assessment; name/strength come from the order; effect recorded once", async () => {
-    const missing = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN" });
+  it("MAR pass: PRN psychotropic needs a pre-assessment; drug, dose, route and credential come from the order and roster", async () => {
+    const missing = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given" });
     expect(missing.status).toBe(400); expect(missing.body.error).toBe("MAR_ASSESSMENT");
-    const future = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN", pre_behavior_assessment: "Pacing", administered_at: new Date(Date.now() + 3600_000).toISOString() });
+    const future = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", pre_behavior_assessment: "Pacing", administered_at: new Date(Date.now() + 3600_000).toISOString() });
     expect(future.status).toBe(400);
-    const given = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN", pre_behavior_assessment: "Pacing, tearful, anxiety 7/10" });
+    const bhtGive = await call(bht(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", pre_behavior_assessment: "Pacing" });
+    expect(bhtGive.status).toBe(403); expect(bhtGive.body.error).toBe("MAR_NOT_PERMITTED");
+    const given = await call(rn(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", pre_behavior_assessment: "Pacing, tearful, anxiety 7/10",
+      dose_given: "100 mg", route: "IV", professional_designation: "MD", medication_name: "Something else" });
     expect(given.status).toBe(201);
-    expect(given.body.item.medication_name).toBe("Hydroxyzine HCl"); expect(given.body.item.authenticated_at).toBeTruthy();
+    expect(given.body.item).toMatchObject({ medication_name: "Hydroxyzine HCl", strength: "25 mg", dose_given: "25 mg", route: "PO", professional_designation: "RN" });
+    expect(given.body.item.authenticated_at).toBeTruthy();
     adminId = given.body.item.id;
     const eff = await call(rn(), "POST", `/api/chart/mar/${adminId}/effect`, { effect_assessment: "Calmer after 45 min, anxiety 3/10" });
     expect(eff.status).toBe(200); expect(eff.body.item.effect_assessed_at).toBeTruthy();
@@ -162,11 +175,38 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     expect(mar.body.item.administrations.map((x: any) => x.id)).toContain(adminId);
   });
 
+  it("only the author can edit a draft at the database level, even with direct SQL as the app role", async () => {
+    const c = await pool!.connect();
+    const api = new ChartApi(pool!, resolve, authorize, { contextSecret: SECRET });
+    try {
+      await c.query("BEGIN"); await c.query("SET LOCAL ROLE nova_app");
+      await c.query("SELECT set_config('app.ctx',$1,true)", [api.signContext(T.a, U.rn)]);
+      await expect(c.query("UPDATE nova_clinical_notes SET plan_next_steps='x' WHERE id=$1", [noteId])).rejects.toThrow(/CHART_LOCKED|NOT_AUTHOR/);
+    } finally { await c.query("ROLLBACK").catch(() => {}); c.release(); }
+  });
+
+  it("forged or raw session variables give no access", async () => {
+    const c = await pool!.connect();
+    try {
+      await c.query("BEGIN"); await c.query("SET LOCAL ROLE nova_app");
+      await c.query("SELECT set_config('app.tenant_id',$1,true), set_config('app.user_id',$2,true)", [T.a, U.rn]);
+      expect((await c.query("SELECT count(*)::int n FROM nova_clinical_notes")).rows[0].n).toBe(0);
+      const wrongKey = new ChartApi(pool!, resolve, authorize, { contextSecret: "a-different-secret-that-the-db-does-not-know" });
+      await c.query("SELECT set_config('app.ctx',$1,true)", [wrongKey.signContext(T.a, U.rn)]);
+      expect((await c.query("SELECT count(*)::int n FROM nova_clinical_notes")).rows[0].n).toBe(0);
+    } finally { await c.query("ROLLBACK").catch(() => {}); c.release(); }
+  });
+
+  it("refuses to run the API over a database login that bypasses row-level security", async () => {
+    await expect(ChartApi.assertSafeConnection(pool!, false)).rejects.toThrow(/BYPASSES_RLS/);
+    await expect(ChartApi.assertSafeConnection(pool!, true)).resolves.toBeUndefined();
+  });
+
   it("another agency cannot read, write, sign, or give meds on this chart", async () => {
     expect((await call(other(), "GET", `/api/chart/admissions/${ids.admA}`)).status).toBe(404);
     expect((await call(other(), "POST", `/api/chart/admissions/${ids.admA}/notes`, { note_type: "progress", service_date: "2026-11-10", narrative: "Cross-agency write attempt goes here." })).status).toBe(404);
     expect((await call(other(), "POST", `/api/chart/notes/${noteId}/sign`)).status).toBe(404);
-    expect((await call(other(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", professional_designation: "RN", pre_behavior_assessment: "x" })).status).toBe(404);
+    expect((await call(other(), "POST", "/api/chart/mar", { medication_order_id: ids.medPrn, outcome: "given", pre_behavior_assessment: "x" })).status).toBe(404);
     expect((await call(other(), "POST", `/api/chart/mar/${adminId}/effect`, { adverse_reaction: "fake" })).status).toBe(404);
     const list = await call(other(), "GET", "/api/chart/residents");
     expect(list.body.items.map((x: any) => x.admission_id)).toEqual([ids.admB]);

@@ -4,13 +4,15 @@
 // Security model
 //  * Identity comes only from the host security adapter (verified token).
 //  * Every request runs in its own transaction as the restricted app role,
-//    with app.tenant_id / app.user_id set from that identity, so Postgres RLS
-//    and the chart triggers enforce isolation, self-signing and locking.
+//    with a short-lived HMAC-signed context (app.ctx) that the database
+//    verifies with a secret app users cannot read. Setting session variables
+//    by hand therefore cannot impersonate another tenant or user.
 //  * The Nova user id is looked up from the token subject inside the tenant;
 //    nothing the client sends can choose the tenant or the acting user.
 //  * Only whitelisted fields are accepted; tenant_id, patient_id,
 //    signatures and timestamps are always set server-side.
 import type { Pool, PoolClient } from "pg";
+import { createHmac } from "node:crypto";
 
 export interface ChartContext {
   tenantId: string;
@@ -76,7 +78,7 @@ function id(v: string | undefined): string {
 }
 
 // Map database errors to safe API errors. Only our own raised codes pass through.
-const KNOWN = /^(CHART_LOCKED|CHART_IDENTITY|SIGNATURE_NOT_OWN|NOT_SIGNABLE|NO_SESSION_USER|COSIGN_BEFORE_SIGN|COSIGN_SELF|ORDER_AUTH|MAR_[A-Z_]+|ADMISSION_NOT_FOUND_OR_NOT_VISIBLE)\b/;
+const KNOWN = /^(CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|SIGNATURE_NOT_OWN|SIGN_NOT_AUTHOR|NOT_AUTHOR|NOT_SIGNABLE|NO_SESSION_USER|COSIGN_[A-Z_]+|ORDER_AUTH[A-Z_]*|MAR_[A-Z_]+|MEDORDER_[A-Z_]+|AMENDMENT_[A-Z_]+|WRONG_RESIDENT|DISCHARGE_[A-Z_]+|ADMISSION_NOT_FOUND_OR_NOT_VISIBLE)\b/;
 export function mapError(e: unknown): ChartResponse {
   if (e instanceof ChartError) return { status: e.status, body: { error: e.code } };
   const err = e as { message?: string; code?: string };
@@ -84,11 +86,11 @@ export function mapError(e: unknown): ChartResponse {
   const m = msg.match(KNOWN);
   if (m) {
     const code = m[1];
-    const status = /SIGNATURE_NOT_OWN|ORDER_AUTH|COSIGN_SELF/.test(code) ? 403
+    const status = /SIGNATURE_NOT_OWN|ORDER_AUTH|COSIGN_SELF|COSIGN_NOT_SUPERVISOR|NOT_AUTHOR|MAR_NOT_PERMITTED|MEDORDER_NOT_PERMITTED|AMENDMENT_NOT_AUTHOR/.test(code) ? 403
       : /NOT_FOUND|NOT_SIGNABLE/.test(code) ? 404
-      : /CHART_LOCKED|CHART_IDENTITY|COSIGN_BEFORE_SIGN/.test(code) ? 409
+      : /CHART_LOCKED|CHART_IDENTITY|CHART_TRANSITION|COSIGN_BEFORE_SIGN|COSIGN_FORGED|MAR_PRN_DAILY_MAX/.test(code) ? 409
       : 400;
-    return { status, body: { error: code, message: msg.slice(0, 240) } };
+    return { status, body: { error: code } };
   }
   if (err?.code === "42501" || /row-level security/i.test(msg)) return { status: 403, body: { error: "FORBIDDEN" } };
   if (err?.code === "23514" || err?.code === "23502") return { status: 400, body: { error: "VALIDATION_FAILED" } };
@@ -97,10 +99,13 @@ export function mapError(e: unknown): ChartResponse {
   return { status: 500, body: { error: "INTERNAL_SERVER_ERROR" } };
 }
 
-export interface ChartApiOptions { appRole?: string; }
+export interface ChartApiOptions { appRole?: string; contextSecret?: string; contextTtlSeconds?: number; }
+const NIL = "00000000-0000-0000-0000-000000000000";
 
 export class ChartApi {
-  private readonly appRole: string;
+  private readonly appRole: string | null;
+  private readonly secret: string;
+  private readonly ttl: number;
   constructor(
     private readonly pool: Pool,
     private readonly resolveContext: ChartContextResolver,
@@ -108,8 +113,32 @@ export class ChartApi {
     options: ChartApiOptions = {},
   ) {
     const role = options.appRole ?? process.env.NOVA_DB_APP_ROLE ?? "nova_app";
-    if (!ROLE_NAME.test(role)) throw new Error("STARTUP_BLOCKED_INVALID_APP_ROLE");
-    this.appRole = role;
+    // "none" = the pool already logs in as a restricted role (recommended for production)
+    if (role !== "none" && !ROLE_NAME.test(role)) throw new Error("STARTUP_BLOCKED_INVALID_APP_ROLE");
+    this.appRole = role === "none" ? null : role;
+    const secret = options.contextSecret ?? process.env.NOVA_CONTEXT_SECRET ?? "";
+    if (secret.length < 32) throw new Error("STARTUP_BLOCKED_NOVA_CONTEXT_SECRET_TOO_SHORT");
+    this.secret = secret;
+    this.ttl = Math.min(Math.max(options.contextTtlSeconds ?? 120, 10), 900);
+  }
+
+  /** Signed session context the database verifies (see build_65 nova_verified_context). */
+  signContext(tenantId: string, userId: string): string {
+    const exp = Math.floor(Date.now() / 1000) + this.ttl;
+    const payload = `v1.${tenantId.toLowerCase()}.${userId.toLowerCase()}.${exp}`;
+    return `${payload}.${createHmac("sha256", this.secret).update(payload).digest("hex")}`;
+  }
+
+  /**
+   * Refuse to serve chart requests over a database login that bypasses RLS
+   * (superuser / BYPASSRLS), unless explicitly allowed for local tests.
+   */
+  static async assertSafeConnection(pool: Pool, allowPrivileged = process.env.NOVA_ALLOW_PRIVILEGED_DB_LOGIN === "true"): Promise<void> {
+    const r = await pool.query("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = session_user");
+    const row = r.rows[0] ?? {};
+    if ((row.rolsuper || row.rolbypassrls) && !allowPrivileged) {
+      throw new Error("STARTUP_BLOCKED_DATABASE_LOGIN_BYPASSES_RLS: connect the API with a restricted login role and set NOVA_DB_APP_ROLE=none");
+    }
   }
 
   /** Run fn inside a transaction as the app role with tenant + user bound. */
@@ -119,11 +148,13 @@ export class ChartApi {
     const db = await this.pool.connect();
     try {
       await db.query("BEGIN");
-      await db.query(`SET LOCAL ROLE ${this.appRole}`);
-      await db.query("SELECT set_config('app.tenant_id', $1, true), set_config('app.user_id', '', true)", [c.tenantId]);
+      if (this.appRole) await db.query(`SET LOCAL ROLE ${this.appRole}`);
+      // 1) tenant-only context to resolve the staff record from the token subject
+      await db.query("SELECT set_config('app.ctx', $1, true)", [this.signContext(c.tenantId, NIL)]);
       const u = await db.query("SELECT id FROM nova_users WHERE external_subject = $1 AND status = 'active'", [c.actor.reference]);
       if (u.rowCount !== 1) throw new ChartError("USER_NOT_PROVISIONED", 403);
-      await db.query("SELECT set_config('app.user_id', $1, true)", [u.rows[0].id]);
+      // 2) full context bound to that user
+      await db.query("SELECT set_config('app.ctx', $1, true)", [this.signContext(c.tenantId, u.rows[0].id)]);
       const result = await fn(db);
       await db.query("COMMIT");
       return result;
@@ -216,7 +247,7 @@ export class ChartApi {
 
   private async residents(db: PoolClient) {
     const r = await db.query(`SELECT admission_id, patient_id, resident_name, status, admitted_at, items_missing, items_unsigned
-      FROM nova_chart_status WHERE status IN ('pending','active') ORDER BY resident_name NULLS LAST, admitted_at`);
+      FROM nova_chart_status WHERE status IN ('pending','active') ORDER BY resident_name NULLS LAST, admitted_at LIMIT 500`);
     return r.rows;
   }
 
@@ -245,7 +276,7 @@ export class ChartApi {
         ORDER BY g.goal_number`, [admissionId]);
     const amendments = await db.query(`SELECT m.id, m.target_id, m.amendment_type, m.reason, m.amended_content, m.created_at, u.display_name AS author_name
         FROM nova_chart_amendments m LEFT JOIN nova_users u ON u.id = m.entered_by
-        WHERE m.patient_id = $1 AND m.target_table = 'nova_clinical_notes' ORDER BY m.created_at`, [pid]);
+        WHERE m.patient_id = $1 AND m.target_table = 'nova_clinical_notes' ORDER BY m.created_at DESC LIMIT 300`, [pid]);
     return { admission: a.rows[0], allergies: allergies.rows, completeness: completeness.rows, notes: notes.rows, goals: goals.rows, amendments: amendments.rows };
   }
 
@@ -257,10 +288,10 @@ export class ChartApi {
       ORDER BY is_prn, medication_name`, [admissionId, date]);
     const given = await db.query(`SELECT m.id, m.medication_order_id, m.scheduled_for, m.administered_at, m.outcome, m.dose_given, m.route,
         m.reason_not_given, m.pre_pain_assessment, m.pre_behavior_assessment, m.effect_assessment, m.effect_assessed_at,
-        m.adverse_reaction, m.administered_by_name, m.professional_designation, m.authenticated_at
+        m.adverse_reaction, m.variance_note, m.administered_by_name, m.professional_designation, m.authenticated_at
       FROM nova_medication_administrations m
       WHERE m.admission_id = $1 AND m.administered_at >= $2::date AND m.administered_at < $2::date + 1
-      ORDER BY m.administered_at`, [admissionId, date]);
+      ORDER BY m.administered_at LIMIT 500`, [admissionId, date]);
     return { date, orders: orders.rows, administrations: given.rows };
   }
 
@@ -345,7 +376,6 @@ export class ChartApi {
     const orderId = id(str(b, "medication_order_id", { required: true }) ?? undefined);
     const outcome = str(b, "outcome", { required: true, max: 40 })!;
     if (!MAR_OUTCOMES.has(outcome)) throw new ChartError("FIELD_INVALID:outcome");
-    const designation = str(b, "professional_designation", { required: true, max: 40 });
     const administeredAtRaw = str(b, "administered_at", { max: 40 });
     let administeredAt = new Date();
     if (administeredAtRaw) {
@@ -356,19 +386,18 @@ export class ChartApi {
       if (ageMs > 24 * 3600_000) throw new ChartError("ADMINISTERED_AT_TOO_OLD_USE_LATE_ENTRY");
     }
     const scheduledFor = str(b, "scheduled_for", { max: 40 });
-    const o = await db.query("SELECT tenant_id, patient_id, admission_id, dose, route FROM nova_medication_orders WHERE id = $1", [orderId]);
+    const o = await db.query("SELECT tenant_id, patient_id, admission_id FROM nova_medication_orders WHERE id = $1", [orderId]);
     if (o.rowCount !== 1) throw new ChartError("MEDICATION_ORDER_NOT_FOUND", 404);
-    const me = await db.query("SELECT COALESCE(display_name, email, external_subject) AS name FROM nova_users WHERE id = nova_current_user()");
+    // Drug, strength, dose, route, staff name and designation are set by the database
+    // from the verified order and the staff roster; the client cannot supply them.
     const r = await db.query(`INSERT INTO nova_medication_administrations(tenant_id, patient_id, admission_id, medication_order_id, scheduled_for,
         administered_at, outcome, medication_name, strength, dose_given, route, reason_not_given, pre_pain_assessment, pre_behavior_assessment,
-        administered_by_name, professional_designation, authenticated_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,'(from order)','(from order)',$8,$9,$10,$11,$12,$13,$14,nova_current_user())
-      RETURNING id, medication_name, strength, administered_at, created_at, authenticated_at`,
+        variance_note, administered_by_name, professional_designation, authenticated_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'-','-','-','-',$8,$9,$10,$11,'-','-',nova_current_user())
+      RETURNING id, medication_name, strength, dose_given, route, professional_designation, administered_at, created_at, authenticated_at`,
       [o.rows[0].tenant_id, o.rows[0].patient_id, o.rows[0].admission_id, orderId, scheduledFor, administeredAt.toISOString(), outcome,
-       str(b, "dose_given", { max: 100 }) ?? (outcome === "given" || outcome === "self_administered_with_assistance" ? o.rows[0].dose : "0"),
-       str(b, "route", { max: 40 }) ?? o.rows[0].route,
        str(b, "reason_not_given", { max: 1000 }), str(b, "pre_pain_assessment", { max: 2000 }), str(b, "pre_behavior_assessment", { max: 2000 }),
-       me.rows[0]?.name ?? "unknown", designation]);
+       str(b, "variance_note", { max: 1000 })]);
     return r.rows[0];
   }
 

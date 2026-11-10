@@ -16,21 +16,7 @@
 -- =====================================================================
 SET client_min_messages = warning;
 
--- Identity helpers (also defined in build_65; repeated so this build stands alone)
-CREATE OR REPLACE FUNCTION nova_jwt_claim(p_key text) RETURNS text
-LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(
-    NULLIF(current_setting('request.jwt.claims', true), '')::jsonb -> 'app_metadata' ->> p_key,
-    NULLIF(current_setting('request.jwt.claims', true), '')::jsonb ->> p_key)
-$$;
-CREATE OR REPLACE FUNCTION nova_current_tenant() RETURNS uuid
-LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(NULLIF(current_setting('app.tenant_id', true), ''), nova_jwt_claim('tenant_id'))::uuid
-$$;
-CREATE OR REPLACE FUNCTION nova_current_user() RETURNS uuid
-LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(NULLIF(current_setting('app.user_id', true), ''), nova_jwt_claim('nova_user_id'))::uuid
-$$;
+-- Identity helpers nova_current_tenant()/nova_current_user() come from build_65 (signed context / JWT).
 
 DO $roles$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nova_app') THEN
@@ -50,6 +36,35 @@ INSERT INTO nova_rls_reference_tables(table_name) VALUES
  ('nova_academy_path_courses'),('nova_academy_instructors'),('nova_academy_assessments'),
  ('nova_service_catalog'),('nova_support_knowledge_articles'),('nova_tools'),('nova_metric_definitions')
 ON CONFLICT DO NOTHING;
+
+-- Identity, roster and rule tables: tenant-readable, never writable by app users (C4)
+CREATE TABLE IF NOT EXISTS nova_rls_readonly_tables (table_name text PRIMARY KEY);
+INSERT INTO nova_rls_readonly_tables(table_name) VALUES
+ ('nova_users'),('nova_roles'),('nova_user_roles'),('nova_organization_users'),('nova_organization_roles'),
+ ('nova_staff_credentials'),('nova_chart_rules'),('nova_tenant_policies'),('nova_agent_role_assignments')
+ON CONFLICT DO NOTHING;
+
+-- Builds a WITH CHECK clause: every single-column foreign key to a tenant-scoped
+-- table must point at a row the caller can see (C9: no cross-tenant references,
+-- no id-existence oracle).
+CREATE OR REPLACE FUNCTION nova_rls_fk_check(p_table oid, p_scoped text[]) RETURNS text
+LANGUAGE plpgsql STABLE SET search_path = public, pg_temp AS $$
+DECLARE fk record; parts text[] := '{}'; tname text;
+BEGIN
+  SELECT relname INTO tname FROM pg_class WHERE oid = p_table;
+  FOR fk IN
+    SELECT a.attname AS col, rc.relname AS parent, ra.attname AS pcol
+    FROM pg_constraint k
+    JOIN pg_attribute a  ON a.attrelid = k.conrelid AND a.attnum = k.conkey[1]
+    JOIN pg_class rc     ON rc.oid = k.confrelid
+    JOIN pg_attribute ra ON ra.attrelid = k.confrelid AND ra.attnum = k.confkey[1]
+    WHERE k.conrelid = p_table AND k.contype = 'f' AND array_length(k.conkey,1) = 1
+      AND rc.relname = ANY(p_scoped) AND k.confrelid <> p_table
+  LOOP
+    parts := parts || format('(%1$I.%2$I IS NULL OR EXISTS (SELECT 1 FROM %3$I p WHERE p.%4$I = %1$I.%2$I))', tname, fk.col, fk.parent, fk.pcol);
+  END LOOP;
+  RETURN CASE WHEN array_length(parts,1) IS NULL THEN 'true' ELSE array_to_string(parts, ' AND ') END;
+END $$;
 
 -- Report of what each table got (rebuilt every run)
 CREATE TABLE IF NOT EXISTS nova_rls_coverage (
@@ -93,19 +108,23 @@ BEGIN
   FOREACH tname IN ARRAY tenant_tables LOOP
     IF tname = 'nova_chart_audit' THEN
       -- append-only: readable by tenant, written only by the audit trigger
-      EXECUTE format('CREATE POLICY nova_rls_tenant_read ON %I FOR SELECT TO %s USING (tenant_id = nova_current_tenant())', tname, app_roles);
+      EXECUTE format('CREATE POLICY nova_rls_tenant_read ON %I FOR SELECT TO %s USING (tenant_id = (SELECT nova_current_tenant()))', tname, app_roles);
       EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON %I FROM %s', tname, app_roles);
       INSERT INTO nova_rls_coverage VALUES (tname, 'A', 'tenant_id, read-only (append-only audit)');
+    ELSIF tname IN (SELECT table_name FROM nova_rls_readonly_tables) THEN
+      EXECUTE format('CREATE POLICY nova_rls_tenant_read ON %I FOR SELECT TO %s USING (tenant_id = (SELECT nova_current_tenant()))', tname, app_roles);
+      INSERT INTO nova_rls_coverage VALUES (tname, 'A', 'tenant_id, read-only (identity/roster/rules)');
     ELSE
-      EXECUTE format('CREATE POLICY nova_rls_tenant ON %I FOR ALL TO %s USING (tenant_id = nova_current_tenant()) WITH CHECK (tenant_id = nova_current_tenant())', tname, app_roles);
-      INSERT INTO nova_rls_coverage VALUES (tname, 'A', 'tenant_id');
+      EXECUTE format('CREATE POLICY nova_rls_tenant ON %I FOR ALL TO %s USING (tenant_id = (SELECT nova_current_tenant())) WITH CHECK (tenant_id = (SELECT nova_current_tenant()) AND %s)',
+        tname, app_roles, nova_rls_fk_check(tname::regclass::oid, tenant_tables || ARRAY['nova_tenants']));
+      INSERT INTO nova_rls_coverage VALUES (tname, 'A', 'tenant_id + references must be visible');
     END IF;
   END LOOP;
 
   -- Tier T
-  CREATE POLICY nova_rls_own_tenant ON nova_tenants FOR SELECT TO nova_app USING (id = nova_current_tenant());
+  CREATE POLICY nova_rls_own_tenant ON nova_tenants FOR SELECT TO nova_app USING (id = (SELECT nova_current_tenant()));
   IF app_roles LIKE '%authenticated%' THEN
-    CREATE POLICY nova_rls_own_tenant_auth ON nova_tenants FOR SELECT TO authenticated USING (id = nova_current_tenant());
+    CREATE POLICY nova_rls_own_tenant_auth ON nova_tenants FOR SELECT TO authenticated USING (id = (SELECT nova_current_tenant()));
   END IF;
   EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON nova_tenants FROM %s', app_roles);
   INSERT INTO nova_rls_coverage VALUES ('nova_tenants', 'T', 'id = current tenant, read-only');
@@ -117,7 +136,7 @@ BEGIN
              WHERE n.nspname = 'public' AND c.relkind = 'r'
                AND c.relname <> ALL(scoped)
                AND c.relname NOT IN (SELECT table_name FROM nova_rls_reference_tables)
-               AND c.relname NOT IN ('nova_rls_reference_tables','nova_rls_coverage') LOOP
+               AND c.relname NOT IN ('nova_rls_reference_tables','nova_rls_coverage','nova_rls_readonly_tables','nova_context_secret') LOOP
       SELECT a.attname AS col, rc.relname AS parent, ra.attname AS parent_col, a.attnotnull AS notnull
         INTO chosen
       FROM pg_constraint k
@@ -130,10 +149,11 @@ BEGIN
       LIMIT 1;
       IF chosen.col IS NOT NULL AND chosen.parent IS NOT NULL THEN
         EXECUTE format(
-          'CREATE POLICY nova_rls_parent ON %I FOR ALL TO %s USING (EXISTS (SELECT 1 FROM %I p WHERE p.%I = %I.%I)) WITH CHECK (EXISTS (SELECT 1 FROM %I p WHERE p.%I = %I.%I))',
+          'CREATE POLICY nova_rls_parent ON %I FOR ALL TO %s USING (EXISTS (SELECT 1 FROM %I p WHERE p.%I = %I.%I)) WITH CHECK (EXISTS (SELECT 1 FROM %I p WHERE p.%I = %I.%I) AND %s)',
           t.relname, app_roles,
           chosen.parent, chosen.parent_col, t.relname, chosen.col,
-          chosen.parent, chosen.parent_col, t.relname, chosen.col);
+          chosen.parent, chosen.parent_col, t.relname, chosen.col,
+          nova_rls_fk_check(t.oid, scoped));
         INSERT INTO nova_rls_coverage VALUES (t.relname, 'B', chosen.col || ' -> ' || chosen.parent
           || CASE WHEN chosen.notnull THEN '' ELSE ' (nullable link: unlinked rows hidden)' END);
         scoped := scoped || t.relname;
@@ -162,12 +182,29 @@ BEGIN
   END LOOP;
 
   EXECUTE format('GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO %s', app_roles);
+  EXECUTE format('REVOKE ALL ON SEQUENCE nova_chart_audit_id_seq FROM %s', app_roles);
+  -- functions: nothing for PUBLIC; app roles get only what they need (C10)
+  REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
   EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO %s', app_roles);
-  EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA public TO %s', app_roles) ;
-  -- re-apply revokes for read-only/no-access tiers (the blanket SELECT above re-granted them)
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION nova_chart_attach(text, text[]), nova_set_context_secret(text), nova_rls_fk_check(oid, text[]) FROM %s', app_roles);
+  EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA public TO %s', app_roles);
+  -- re-apply revokes the blanket SELECT re-granted
   FOR t IN SELECT table_name AS relname FROM nova_rls_coverage WHERE tier = 'P' LOOP
     EXECUTE format('REVOKE ALL ON %I FROM %s', t.relname, app_roles);
   END LOOP;
+  FOR t IN SELECT r.table_name AS relname FROM nova_rls_readonly_tables r JOIN nova_rls_coverage c ON c.table_name = r.table_name LOOP
+    EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %I FROM %s', t.relname, app_roles);
+  END LOOP;
+  EXECUTE format('REVOKE ALL ON nova_context_secret FROM %s', app_roles);
+  -- Supabase: anonymous callers get nothing
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
+    REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM anon;
+  END IF;
+  -- no temp tables for anyone but the owner (C2: temp-table shadowing)
+  EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());
+  EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM %s', current_database(), app_roles);
+  REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 END $rls$;
 
 -- Views must run with the caller's rights so RLS applies through them

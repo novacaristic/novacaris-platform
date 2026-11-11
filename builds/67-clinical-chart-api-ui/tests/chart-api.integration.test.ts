@@ -205,12 +205,13 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     const db = pool!;
     await db.query(`DO $$BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='nova_api_test') THEN CREATE ROLE nova_api_test LOGIN NOINHERIT; END IF;
+      ALTER ROLE nova_api_test PASSWORD 'nova_api_test_only_pw';
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF;
     END$$`);
     await db.query("GRANT nova_app TO nova_api_test");
     await db.query("GRANT CONNECT ON DATABASE " + (await db.query("SELECT current_database() d")).rows[0].d + " TO nova_api_test");
     await db.query("GRANT USAGE ON SCHEMA public TO nova_api_test");
-    const url = new URL(databaseUrl!); url.username = "nova_api_test"; url.password = "";
+    const url = new URL(databaseUrl!); url.username = "nova_api_test"; url.password = "nova_api_test_only_pw";  // test-only login
     const restricted = new Pool({ connectionString: url.toString(), max: 2 });
     try {
       await expect(ChartApi.assertSafeConnection(restricted, false)).resolves.toBeUndefined();

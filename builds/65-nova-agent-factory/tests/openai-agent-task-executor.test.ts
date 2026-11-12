@@ -15,9 +15,10 @@ describe("OpenAI Responses adapter",()=>{
     const fetchImpl=vi.fn()
       .mockResolvedValueOnce(response({id:"resp_1",output:[{type:"function_call",name:"search_docs",call_id:"call_1",arguments:'{"query":"policy"}'}]}))
       .mockResolvedValueOnce(response({id:"resp_2",output:[],output_text:"Found approved policy."}));
-    const invokeTool=vi.fn(async <T>(_name:string,_cap:AgentCapability,operation:()=>Promise<T>):Promise<T>=>operation());
+    const runTool=async <T>(_name:string,_cap:AgentCapability,operation:()=>Promise<T>):Promise<T>=>operation();
+    const invokeTool=vi.fn(runTool);
     const executor=createOpenAIAgentTaskExecutor({apiKey:"test-key",model:"test-model",tools:[tool],fetchImpl});
-    const result=await executor.execute({agent,capability:"research.web",input:{query:"policy"},signal:new AbortController().signal,invokeTool});
+    const result=await executor.execute({agent,capability:"research.web",input:{query:"policy"},signal:new AbortController().signal,invokeTool:invokeTool as unknown as typeof runTool});
     expect(invokeTool).toHaveBeenCalledTimes(1);
     expect(invokeTool).toHaveBeenCalledWith("search_docs","research.web",expect.any(Function));
     expect(result).toMatchObject({provider:"openai",model:"test-model",outputText:"Found approved policy."});

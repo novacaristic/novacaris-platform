@@ -47,3 +47,6 @@ jobs:
 
       - name: Run pilot tests including live PostgreSQL
         run: npm run test:pilot -- --reporter=verbose
+
+      - name: Type-check and test Build 66 agent task dispatcher
+        run: npm run check:agent-task-dispatcher

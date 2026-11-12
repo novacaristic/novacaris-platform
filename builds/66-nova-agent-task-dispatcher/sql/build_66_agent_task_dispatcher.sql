@@ -1,0 +1,11 @@
+BEGIN;
+ALTER TABLE nova_agents.tasks ADD COLUMN IF NOT EXISTS capability text;
+ALTER TABLE nova_agents.tasks ADD COLUMN IF NOT EXISTS idempotency_key text;
+ALTER TABLE nova_agents.tasks ADD COLUMN IF NOT EXISTS request_fingerprint text;
+ALTER TABLE nova_agents.tasks ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0);
+ALTER TABLE nova_agents.tasks ADD COLUMN IF NOT EXISTS lease_owner text;
+ALTER TABLE nova_agents.tasks ADD COLUMN IF NOT EXISTS lease_until timestamptz;
+ALTER TABLE nova_agents.tasks ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+CREATE UNIQUE INDEX IF NOT EXISTS agent_tasks_idempotency_uq ON nova_agents.tasks(tenant_id,agent_id,idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS agent_tasks_lease_idx ON nova_agents.tasks(status,lease_until,created_at);
+COMMIT;

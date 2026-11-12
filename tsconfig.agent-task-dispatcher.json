@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vitest/globals", "node"]
+  },
+  "include": [
+    "builds/65-nova-agent-factory/src/agent-factory.ts",
+    "builds/66-nova-agent-task-dispatcher/src/agent-task-dispatcher.ts",
+    "builds/66-nova-agent-task-dispatcher/src/postgres-agent-task-store.ts",
+    "builds/66-nova-agent-task-dispatcher/tests/agent-task-dispatcher.test.ts"
+  ]
+}

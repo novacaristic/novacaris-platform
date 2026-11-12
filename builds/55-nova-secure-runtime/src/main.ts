@@ -10,6 +10,11 @@ import { checkDatabaseReadiness, validateRuntimeConfiguration } from "../../../b
 import { ClientCaseWorkspace, type WorkspaceContext } from "../../../builds/61-nova-client-case-workspace/src/client-case-workspace";
 import { PostgresWorkspaceStore } from "../../../builds/62-nova-durable-workspace/src/postgres-workspace-store";
 import { WorkspaceApi } from "../../../builds/62-nova-durable-workspace/src/workspace-api";
+import { AgentFactory, defaultFactoryPolicy } from "../../../builds/65-nova-agent-factory/src/agent-factory";
+import { AgentFactoryApi, type AgentApiRequest } from "../../../builds/65-nova-agent-factory/src/agent-factory-api";
+import { PostgresAgentFactoryStore } from "../../../builds/65-nova-agent-factory/src/postgres-agent-factory-store";
+import { AgentRuntimeApi, PostgresAgentRuntime, type AgentTaskExecutor } from "../../../builds/65-nova-agent-factory/src/agent-runtime";
+import { createOpenAIAgentTaskExecutorFromEnv } from "../../../builds/65-nova-agent-factory/src/openai-agent-task-executor";
 
 interface HostSecurityAdapter {
   resolveContext: AuthenticatedContextResolver;
@@ -46,10 +51,54 @@ async function main(): Promise<void> {
     const workspace = new ClientCaseWorkspace(workspaceStore, (context, action) => authorize(context as unknown as RequestContext, action));
     workspaceApi = new WorkspaceApi(security.resolveWorkspaceContext, workspace, (tenantId, noteId) => workspaceStore.listAudit(tenantId, noteId));
   }
-  const server = createRecoveryHttpServer({ api, workspaceApi, readiness, allowedOrigin });
+  let agentApi: AgentFactoryApi | undefined;
+  let agentRuntimeApi: AgentRuntimeApi | undefined;
+  let agentWorker: ReturnType<typeof setInterval> | undefined;
+  if (process.env.NOVA_AGENT_FACTORY_ENABLED === "true") {
+    const schema = await pool.query<{ready:boolean}>(
+      "SELECT to_regclass('nova_agents.agent_profiles') IS NOT NULL AND to_regclass('nova_agents.agent_permissions') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='nova_agents' AND table_name='tasks' AND column_name='idempotency_key') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='nova_agents' AND table_name='tasks' AND column_name='approved_by') AS ready"
+    );
+    if (!schema.rows[0]?.ready) throw new Error("STARTUP_BLOCKED_AGENT_RUNTIME_MIGRATIONS_REQUIRED");
+    const factory = new AgentFactory(new PostgresAgentFactoryStore(pool), defaultFactoryPolicy);
+    const resolveAgentContext = (request: AgentApiRequest) => (security.resolveContext as (request: AgentApiRequest) => Promise<RequestContext | null>)(request);
+    agentApi = new AgentFactoryApi(
+      resolveAgentContext,
+      (context, action) => authorize(context, action),
+      factory,
+    );
+    const runtime = new PostgresAgentRuntime(pool, factory);
+    let executor: AgentTaskExecutor | undefined;
+    const executorModulePath = process.env.NOVA_AGENT_EXECUTOR_MODULE?.trim();
+    if (executorModulePath) {
+      // An explicitly reviewed adapter may register a narrow tool allowlist.
+      const executorModule = await import(pathToFileURL(resolve(executorModulePath)).href) as { createAgentTaskExecutor?: () => AgentTaskExecutor; agentTaskExecutor?: AgentTaskExecutor };
+      executor = typeof executorModule.createAgentTaskExecutor === "function" ? executorModule.createAgentTaskExecutor() : executorModule.agentTaskExecutor;
+      if (!executor || typeof executor.execute !== "function") throw new Error("STARTUP_BLOCKED_AGENT_EXECUTOR_CONTRACT");
+    } else {
+      const provider = (process.env.NOVA_AGENT_PROVIDER ?? "").trim().toLowerCase();
+      if (provider === "openai") {
+        // Built-in adapter intentionally has no external tools. Tool access requires
+        // an explicitly reviewed executor module with per-tool invokeTool gating.
+        executor = createOpenAIAgentTaskExecutorFromEnv();
+      } else if (provider) {
+        throw new Error("STARTUP_BLOCKED_UNSUPPORTED_AGENT_PROVIDER");
+      }
+    }
+    if (executor) {
+      let busy = false;
+      agentWorker = setInterval(() => {
+        if (busy) return;
+        busy = true;
+        void runtime.runOne(executor).catch(error => process.stderr.write("nova_agent_worker_error: " + (error instanceof Error ? error.message : "unknown") + "\n")).finally(() => { busy = false; });
+      }, 1000);
+    }
+    agentRuntimeApi = new AgentRuntimeApi(resolveAgentContext, (context, action) => authorize(context, action), factory, runtime, Boolean(executor));
+  }
+  const server = createRecoveryHttpServer({ api, workspaceApi, agentApi, agentRuntimeApi, readiness, allowedOrigin });
   server.listen(port, process.env.HOST ?? "0.0.0.0", () => process.stdout.write(`nova_recovery_runtime_listening port=${port}\n`));
   const shutdown = (signal: string) => {
     process.stdout.write(`nova_recovery_runtime_shutdown signal=${signal}\n`);
+    if (agentWorker) clearInterval(agentWorker);
     server.close(() => { void pool.end().finally(() => process.exit(0)); });
     setTimeout(() => process.exit(1), 10000).unref();
   };

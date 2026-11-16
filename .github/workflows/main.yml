@@ -47,3 +47,25 @@ jobs:
 
       - name: Run pilot tests including live PostgreSQL
         run: npm run test:pilot -- --reporter=verbose
+
+      - name: Schema drift check
+        run: ./scripts/db/check-schema-drift.sh
+
+      - name: Fresh install of every build, twice (install + in-place upgrade)
+        env:
+          DATABASE_URL: postgresql://nova_test:nova_test_password@localhost:5432/nova_install
+        run: |
+          psql postgresql://nova_test:nova_test_password@localhost:5432/postgres -c "CREATE DATABASE nova_install"
+          ./scripts/db/install.sh
+          ./scripts/db/install.sh
+
+      - name: Clinical chart acceptance tests (SQL, as the restricted app role)
+        env:
+          DATABASE_URL: postgresql://nova_test:nova_test_password@localhost:5432/nova_install
+        run: |
+          psql "$DATABASE_URL" -q -f builds/65-clinical-chart-article7/tests/acceptance_tests.sql > /dev/null 2>&1 || true
+          psql "$DATABASE_URL" -Atc "SELECT result || '  ' || test FROM nova_test_results ORDER BY n"
+          FAILS=$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM nova_test_results WHERE result <> 'PASS'")
+          TOTAL=$(psql "$DATABASE_URL" -Atc "SELECT count(*) FROM nova_test_results")
+          echo "acceptance: $TOTAL run, $FAILS failed"
+          test "$TOTAL" -ge 90 && test "$FAILS" -eq 0

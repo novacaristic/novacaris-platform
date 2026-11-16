@@ -5,7 +5,8 @@
 The first NovaClerk slice turns a staff member's own rough notes into a draft progress note, inside the NovaCärïs chart's note editor ("Draft with NovaClerk").
 
 ## What it does
-- **Drafts** the narrative, resident response and plan from the staff member's words, and links treatment-plan goals.
+- **Drafts** the narrative, resident response and plan from the staff member's words.
+- **Suggests** treatment-plan goals, but never links them. A suggestion needs an explicit "goal 2" or at least two key words from the goal; one shared word like "medication" isn't enough. Suggestions show unchecked in the note editor as *Suggested by NovaClerk — confirm*, and only the staff member can tick them.
 - **Fabrication guard** (`src/guard.ts`) checks every draft sentence against the source notes. It runs on every draft, from any model.
   - **Blocks:** invented numbers or times, invented medications, changed or invented quotes, invented risk events (self-harm, restraint, intoxication…), dropped or added negatives, and uncertainty stated as fact.
   - **Flags for review:** sentences the notes don't clearly support.
@@ -20,13 +21,18 @@ The first NovaClerk slice turns a staff member's own rough notes into a draft pr
 
 ## Model providers
 - **Default — `reference-extractive`:** deterministic. It only rearranges the staff member's own sentences, so it can't invent anything. Safe to use today.
-- **`anthropic` (LLM):** off unless all of these are set:
+- **`bedrock` (Claude through AWS, recommended for production):** covered by the AWS BAA and uses the server's IAM role, so no API key is stored. Off unless all of these are set:
+  - `NOVA_AI_PROVIDER=bedrock`
+  - `NOVA_AI_MODEL` (a Claude model ID or inference profile enabled in your AWS account)
+  - `NOVA_AI_REGION` (or `AWS_REGION`)
+  - `NOVA_AI_BAA_CONFIRMED=true`, set only after the AWS BAA is accepted in AWS Artifact and you've confirmed the model is HIPAA-eligible on Bedrock.
+- **`anthropic` (direct API):** off unless all of these are set:
   - `NOVA_AI_PROVIDER=anthropic`
   - `NOVA_AI_API_KEY`
   - `NOVA_AI_MODEL`
   - `NOVA_AI_BAA_CONFIRMED=true`, set only after a HIPAA Business Associate Agreement covering this use is signed.
 
-  The provider refuses to start without the BAA flag, uses HTTPS only, and accepts only the three text fields back from the model.
+  Both model providers refuse to start without the BAA flag and accept only the three text fields back from the model; the direct one uses HTTPS only. An unknown `NOVA_AI_PROVIDER` value stops startup instead of quietly falling back.
 
 ## Test harness
 Run it with `npm run harness:novaclerk`. It is also part of `npm run check:pilot`.
@@ -39,7 +45,7 @@ Run it with `npm run harness:novaclerk`. It is also part of `npm run check:pilot
 | D Fabrication challenges | 10 | Guard catches invented facts |
 | E Negation and quote | 10 | Guard catches meaning flips |
 
-Cases span 10 staff roles. A further 4 tests check provider safety, and one runs a deliberately bad model, which must produce **STOP**.
+Cases span 10 staff roles. Further tests check provider safety (direct and Bedrock), goal suggestions and name matching, and one runs a deliberately bad model, which must produce **STOP**.
 
 Gate (PILOT-10I):
 - **STOP:** any fabrication or negation/uncertainty failure, whatever the total.

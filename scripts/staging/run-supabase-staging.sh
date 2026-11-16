@@ -24,11 +24,7 @@ EXISTING=$(psql "$SUPABASE_DB_URL" -Atc "select count(*) from pg_tables where sc
 if [ "$EXISTING" != "0" ]; then log "ABORT: public schema already has $EXISTING nova_ tables. Use a fresh test project."; exit 3; fi
 
 log ""; log "== 1. Apply every build in order (ON_ERROR_STOP)"
-n=0
-for f in $(ls builds/*/sql/build_*.sql | sort -V); do
-  if psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null 2>>"$REPORT"; then n=$((n+1)); else log "FAIL applying $f"; exit 1; fi
-done
-log "PASS: $n build files applied"
+if DATABASE_URL="$SUPABASE_DB_URL" ./scripts/db/install.sh >>"$REPORT" 2>&1; then log "PASS: $(grep -c . <(./scripts/db/install.sh --list)) build files applied with the standard installer"; else log "FAIL: installer stopped (see above)"; exit 1; fi
 
 log ""; log "== 2. Row-level security coverage"
 psql "$SUPABASE_DB_URL" -Atc "select tier||': '||count(*) from nova_rls_coverage group by tier order by tier" | tee -a "$REPORT"

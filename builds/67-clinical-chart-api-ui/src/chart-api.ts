@@ -212,8 +212,8 @@ export class ChartApi {
         }
         if (M === "GET" && r.length === 3 && r[2] === "mar") {
           await this.require(c, "chart.read");
-          const date = req.query?.date ?? new Date().toISOString().slice(0, 10);
-          if (!DATE.test(date)) throw new ChartError("FIELD_INVALID:date");
+          const date = req.query?.date ?? null;   // no date: the facility's today (not the UTC server's)
+          if (date !== null && !DATE.test(date)) throw new ChartError("FIELD_INVALID:date");
           return { status: 200, body: { item: await this.session(c, db => this.mar(db, admissionId, date)) } };
         }
         if (M === "POST" && r.length === 4 && r[2] === "notes" && r[3] === "assist") {
@@ -293,7 +293,9 @@ export class ChartApi {
           n.resident_response, n.plan_next_steps, n.treatment_plan_goal_ids, n.ai_drafted, n.ai_guard_status, n.ai_flags_acknowledged_at, n.requires_cosign,
           n.entered_by, eu.display_name AS author_name, n.created_at, n.authenticated_at,
           n.cosigned_at, cu.display_name AS cosigner_name, (n.entered_by = nova_current_user()) AS mine,
-          q.late_entry
+          q.late_entry,
+          CASE WHEN n.ai_drafted AND n.authenticated_at IS NULL THEN (SELECT COALESCE(r.draft->'suggested_goal_ids','[]'::jsonb) FROM nova_ai_draft_runs r
+            WHERE r.note_id = n.id ORDER BY r.created_at DESC LIMIT 1) END AS suggested_goal_ids
         FROM nova_clinical_notes n
         LEFT JOIN nova_users eu ON eu.id = n.entered_by
         LEFT JOIN nova_users cu ON cu.id = n.cosigned_by
@@ -308,7 +310,8 @@ export class ChartApi {
     return { admission: a.rows[0], allergies: allergies.rows, completeness: completeness.rows, notes: notes.rows, goals: goals.rows, amendments: amendments.rows };
   }
 
-  private async mar(db: PoolClient, admissionId: string, date: string) {
+  private async mar(db: PoolClient, admissionId: string, requested: string | null) {
+    const date: string = requested ?? (await db.query("SELECT nova_facility_today(nova_current_tenant())::text AS d")).rows[0].d;
     const orders = await db.query(`SELECT id, medication_name, strength, dose, route, frequency, scheduled_times, is_prn, prn_indication,
         prn_max_doses_per_day, is_psychotropic, is_pain_medication, status, (authenticated_at IS NOT NULL) AS verified
       FROM nova_medication_orders WHERE admission_id = $1 AND status = 'active'
@@ -318,7 +321,7 @@ export class ChartApi {
         m.reason_not_given, m.pre_pain_assessment, m.pre_behavior_assessment, m.effect_assessment, m.effect_assessed_at,
         m.adverse_reaction, m.variance_note, m.administered_by_name, m.professional_designation, m.authenticated_at
       FROM nova_medication_administrations m
-      WHERE m.admission_id = $1 AND m.administered_at >= $2::date AND m.administered_at < $2::date + 1
+      WHERE m.admission_id = $1 AND m.administered_at >= ($2::date::timestamp AT TIME ZONE nova_facility_tz(m.tenant_id)) AND m.administered_at < (($2::date + 1)::timestamp AT TIME ZONE nova_facility_tz(m.tenant_id))   -- the facility's calendar day, not UTC's
       ORDER BY m.administered_at LIMIT 500`, [admissionId, date]);
     return { date, orders: orders.rows, administrations: given.rows };
   }
@@ -397,7 +400,7 @@ export class ChartApi {
       [c.tenantId, a.rows[0].patient_id, admissionId, noteId, result.provider, result.model, source, JSON.stringify(result.draft),
        result.guard.status, JSON.stringify(result.guard.flags), JSON.stringify(result.guard.provenance), JSON.stringify(result.coach)]);
     await db.query("UPDATE nova_clinical_notes SET updated_at = now() WHERE id = $1", [noteId]);   // syncs ai_guard_status
-    return { id: noteId, draft: result.draft, guard: { status: result.guard.status, flags: result.guard.flags }, coach: result.coach, provider: result.provider };
+    return { id: noteId, draft: result.draft, suggested_goal_ids: result.draft.suggested_goal_ids, guard: { status: result.guard.status, flags: result.guard.flags }, coach: result.coach, provider: result.provider };
   }
 
   private async aiRun(db: PoolClient, noteId: string) {

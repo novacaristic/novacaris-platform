@@ -17,7 +17,8 @@ export interface DraftContent {
   narrative: string;
   resident_response: string | null;
   plan_next_steps: string | null;
-  treatment_plan_goal_ids: string[];
+  treatment_plan_goal_ids: string[];   // always empty in a draft: staff confirm goal links themselves
+  suggested_goal_ids: string[];        // NovaClerk's suggestions, shown unchecked for staff to confirm
 }
 export interface CoachItem { field: string; message: string; }
 export interface DraftResult {
@@ -43,10 +44,34 @@ export function coachDraft(req: DraftRequest, d: DraftContent): CoachItem[] {
   if (!INTERVENTION_CUE.test(d.narrative)) items.push({ field: "narrative", message: "Describe the intervention you provided (what you did)." });
   if (!d.resident_response) items.push({ field: "resident_response", message: "Add how the resident responded or progressed. The notes don't say." });
   if (!d.plan_next_steps) items.push({ field: "plan_next_steps", message: "Add the plan or next step. The notes don't say." });
-  if ((req.goals?.length ?? 0) > 0 && d.treatment_plan_goal_ids.length === 0) items.push({ field: "treatment_plan_goal_ids", message: "Link the treatment-plan goal this service addressed." });
+  if ((req.goals?.length ?? 0) > 0 && d.treatment_plan_goal_ids.length === 0) {
+    const nums = (req.goals ?? []).filter(g => d.suggested_goal_ids.includes(g.id)).map(g => `Goal ${g.goal_number}`);
+    items.push({ field: "treatment_plan_goal_ids", message: nums.length
+      ? `NovaClerk suggests ${nums.join(" and ")}. Confirm or change the goal link in the note before signing.`
+      : "Link the treatment-plan goal this service addressed." });
+  }
   if (req.serviceCode && !/\b\d{1,3}\s?(min|minutes|hour|hours|hr)\b|\b\d{1,2}:\d{2}\b/i.test(req.source)) items.push({ field: "duration", message: "Billable service: record start and end times." });
   return items;
 }
+
+// ------------------------------------------------------------------ goal suggestions
+const GOAL_STOPWORDS = new Set(["improve","increase","decrease","reduce","maintain","develop","learn","daily","their","about","other","through","within","without","using","own"]);
+/**
+ * Suggests treatment-plan goals the notes clearly point to: an explicit "goal 2" / "goal #2",
+ * or at least two distinct key words from the goal. One shared word (e.g. "medication")
+ * is not enough. These are suggestions only; staff confirm every goal link.
+ */
+export function suggestGoals(source: string, goals: DraftRequest["goals"] = []): string[] {
+  const text = source.toLowerCase();
+  const words = new Set(text.split(/[^a-z0-9]+/).filter(Boolean));
+  return (goals ?? []).filter(g => {
+    if (new RegExp(`\\bgoal\\s*#?\\s*${g.goal_number}\\b`, "i").test(text)) return true;
+    const keys = [...new Set(g.goal.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 5 && !GOAL_STOPWORDS.has(w)))];
+    return keys.filter(k => words.has(k)).length >= 2;
+  }).map(g => g.id);
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // ------------------------------------------------------------------ reference provider (deterministic, extractive)
 /** Copies the staff member's own sentences into the right sections. It cannot invent anything. */
@@ -56,18 +81,18 @@ export class ReferenceProvider implements DraftProvider {
     const tidy = (s: string) => { const t = s.trim().replace(/\s+/g, " "); const c = t.charAt(0).toUpperCase() + t.slice(1); return /[.!?]$/.test(c) ? c : c + "."; };
     const sentences = splitSentences(req.source).map(tidy);
     const first = (req.residentFirstName ?? "").trim();
-    const isResident = (s: string) => RESIDENT_SUBJECT.test(s) || (first.length > 1 && s.toLowerCase().startsWith(first.toLowerCase()));
+    // whole-word match: a resident named "Al" must not match a sentence starting "Also"
+    const firstRe = first.length > 1 ? new RegExp(`^${escapeRe(first)}(?![\\p{L}\\p{N}])`, "iu") : null;
+    const isResident = (s: string) => RESIDENT_SUBJECT.test(s) || (firstRe !== null && firstRe.test(s));
     const plan = sentences.filter(s => PLAN_START.test(s) || (PLAN_CUE.test(s) && /\bwill\b/i.test(s) && !isResident(s)));
     const response = sentences.filter(s => !plan.includes(s) && isResident(s) && RESPONSE_CUE.test(s));
     const narrative = sentences.filter(s => !plan.includes(s) && !response.includes(s));
-    const text = req.source.toLowerCase();
-    const goalIds = (req.goals ?? []).filter(g => new RegExp(`\\bgoal\\s*#?\\s*${g.goal_number}\\b`, "i").test(text)
-      || g.goal.toLowerCase().split(/\W+/).filter(w => w.length > 5).some(w => text.includes(w))).map(g => g.id);
     return {
       narrative: (narrative.length ? narrative : sentences).join(" "),
       resident_response: response.length ? response.join(" ") : null,
       plan_next_steps: plan.length ? plan.join(" ") : null,
-      treatment_plan_goal_ids: goalIds,
+      treatment_plan_goal_ids: [],
+      suggested_goal_ids: suggestGoals(req.source, req.goals),
     };
   }
 }
@@ -113,6 +138,49 @@ export class AnthropicProvider implements DraftProvider {
   }
 }
 
+// ------------------------------------------------------------------ AWS Bedrock provider (off unless the AWS BAA is in place)
+export interface BedrockInvokeClient { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<{ body?: Uint8Array }>; }
+export interface BedrockProviderOptions {
+  modelId: string;            // a Claude model ID (or inference profile) enabled in your AWS account and region
+  region: string;             // e.g. us-west-2
+  baaConfirmed: boolean;      // the AWS BAA is accepted in AWS Artifact and Bedrock is used in a HIPAA-eligible way
+  timeoutMs?: number;
+  client?: BedrockInvokeClient;   // injected in tests; otherwise the AWS SDK client with the default credential chain (IAM role)
+}
+/**
+ * Claude through Amazon Bedrock, covered by the AWS BAA. Uses the server's IAM role,
+ * so there is no API key to store. Same refusal rules as the direct provider.
+ */
+export class BedrockProvider implements DraftProvider {
+  readonly name = "aws-bedrock"; readonly model: string;
+  private client: BedrockInvokeClient | null;
+  constructor(private readonly o: BedrockProviderOptions) {
+    if (!o.baaConfirmed) throw new AgentError("AI_PROVIDER_BLOCKED_NO_BAA");
+    if (!o.modelId || !/^[a-z]{2}-[a-z]+-\d$/.test(o.region ?? "")) throw new AgentError("AI_PROVIDER_MISCONFIGURED");
+    this.model = o.modelId; this.client = o.client ?? null;
+  }
+  private async getClient(): Promise<BedrockInvokeClient> {
+    if (!this.client) {
+      const sdk = await import("@aws-sdk/client-bedrock-runtime");
+      this.client = new sdk.BedrockRuntimeClient({ region: this.o.region }) as unknown as BedrockInvokeClient;
+    }
+    return this.client;
+  }
+  async draft(req: DraftRequest): Promise<DraftContent> {
+    const { InvokeModelCommand } = await import("@aws-sdk/client-bedrock-runtime");
+    const body = JSON.stringify({ anthropic_version: "bedrock-2023-05-31", max_tokens: 1200, temperature: 0, system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: `Note type: ${req.noteType}\nStaff notes:\n<<<\n${req.source}\n>>>` }] });
+    const command = new InvokeModelCommand({ modelId: this.o.modelId, contentType: "application/json", accept: "application/json", body: new TextEncoder().encode(body) });
+    let res: { body?: Uint8Array };
+    try { res = await (await this.getClient()).send(command, { abortSignal: AbortSignal.timeout(this.o.timeoutMs ?? 30000) }); }
+    catch (e) { throw new AgentError("AI_PROVIDER_ERROR_" + ((e as { name?: string })?.name ?? "UNKNOWN").replace(/[^A-Za-z]/g, "").slice(0, 40)); }
+    let parsed: { content?: { type: string; text?: string }[] };
+    try { parsed = JSON.parse(new TextDecoder().decode(res.body ?? new Uint8Array())); } catch { throw new AgentError("AI_OUTPUT_NOT_JSON"); }
+    const text = (parsed.content ?? []).filter(b => b.type === "text").map(b => b.text ?? "").join("");
+    return parseDraftJson(text);
+  }
+}
+
 /** Strictly parse model output: only the three text fields are accepted, nothing else. */
 export function parseDraftJson(text: string): DraftContent {
   const m = text.match(/\{[\s\S]*\}/); if (!m) throw new AgentError("AI_OUTPUT_NOT_JSON");
@@ -123,13 +191,17 @@ export function parseDraftJson(text: string): DraftContent {
   const r = o as Record<string, unknown>;
   const str = (v: unknown, max: number) => v === null || v === undefined || v === "" ? null : typeof v === "string" && v.length <= max ? v.trim() : (() => { throw new AgentError("AI_OUTPUT_INVALID"); })();
   const narrative = str(r.narrative, 20000); if (!narrative) throw new AgentError("AI_OUTPUT_EMPTY");
-  return { narrative, resident_response: str(r.resident_response, 8000), plan_next_steps: str(r.plan_next_steps, 8000), treatment_plan_goal_ids: [] };
+  return { narrative, resident_response: str(r.resident_response, 8000), plan_next_steps: str(r.plan_next_steps, 8000), treatment_plan_goal_ids: [], suggested_goal_ids: [] };
 }
 
 export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): DraftProvider {
+  if (env.NOVA_AI_PROVIDER === "bedrock") {
+    return new BedrockProvider({ modelId: env.NOVA_AI_MODEL ?? "", region: env.NOVA_AI_REGION ?? env.AWS_REGION ?? "", baaConfirmed: env.NOVA_AI_BAA_CONFIRMED === "true" });
+  }
   if (env.NOVA_AI_PROVIDER === "anthropic") {
     return new AnthropicProvider({ apiKey: env.NOVA_AI_API_KEY ?? "", model: env.NOVA_AI_MODEL ?? "", baaConfirmed: env.NOVA_AI_BAA_CONFIRMED === "true" });
   }
+  if (env.NOVA_AI_PROVIDER && env.NOVA_AI_PROVIDER !== "reference") throw new AgentError("AI_PROVIDER_UNKNOWN");
   return new ReferenceProvider();
 }
 
@@ -140,9 +212,11 @@ export class DocumentationAgent {
     if (!req.source || req.source.trim().length < 15) throw new AgentError("SOURCE_TOO_SHORT");
     if (req.source.length > 20000) throw new AgentError("SOURCE_TOO_LONG");
     const draft = await this.provider.draft(req);
-    // goal links come only from the resident's own plan
+    // goal links are never set by the AI: staff confirm them. Suggestions come only from
+    // the resident's own active plan (model output can't add goals), checked again here.
     const valid = new Set((req.goals ?? []).map(g => g.id));
-    draft.treatment_plan_goal_ids = draft.treatment_plan_goal_ids.filter(id => valid.has(id));
+    draft.treatment_plan_goal_ids = [];
+    draft.suggested_goal_ids = [...new Set([...(draft.suggested_goal_ids ?? []), ...suggestGoals(req.source, req.goals)])].filter(id => valid.has(id));
     const guard = guardDraft(req.source, { narrative: draft.narrative, resident_response: draft.resident_response, plan_next_steps: draft.plan_next_steps }, { medications: req.medications });
     return { draft, guard, coach: coachDraft(req, draft), provider: this.provider.name, model: this.provider.model };
   }

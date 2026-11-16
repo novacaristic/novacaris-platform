@@ -75,6 +75,18 @@ CREATE TABLE IF NOT EXISTS nova_rls_coverage (
 );
 
 -- Reusable: later builds that add tables call SELECT nova_apply_rls(); at their end.
+-- Opaque, time-ordered row ids for tables app users write to. A shared counter
+-- (bigserial) lets one agency estimate how much another agency writes by watching
+-- the gaps between its own ids. This id is microseconds since 2026-01-01 times 4096,
+-- plus 12 random bits: rows still sort in insert order (ORDER BY id keeps working,
+-- and new ids sort after old counter ids), but the value says nothing about volume.
+-- Fits in bigint until about the year 2097.
+CREATE OR REPLACE FUNCTION nova_opaque_id() RETURNS bigint
+LANGUAGE sql VOLATILE PARALLEL SAFE SET search_path = pg_catalog AS $$
+  SELECT ((extract(epoch FROM clock_timestamp() - timestamptz '2026-01-01 00:00:00+00') * 1000000)::bigint * 4096)
+         + floor(random() * 4096)::bigint   -- core function: works where pgcrypto sits outside pg_catalog (Supabase)
+$$;
+
 CREATE OR REPLACE FUNCTION nova_apply_rls() RETURNS void
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $rls$
 DECLARE
@@ -183,18 +195,22 @@ BEGIN
     INSERT INTO nova_rls_coverage VALUES (t.relname, 'P', 'platform/operator only (service role)');
   END LOOP;
 
-  -- sequences: only those owned by tables app users may insert into (no row-count leaks)
-  FOR t IN SELECT seq.relname AS seqname, tbl.relname AS tblname
+  -- sequences: no app role gets any (no cross-agency row-count leaks)
+  FOR t IN SELECT seq.relname AS seqname, tbl.relname AS tblname, att.attname AS colname,
+                  format_type(att.atttypid, att.atttypmod) AS coltype, pg_get_expr(def.adbin, def.adrelid) AS coldefault
            FROM pg_class seq JOIN pg_namespace n ON n.oid = seq.relnamespace
            JOIN pg_depend d ON d.objid = seq.oid AND d.deptype IN ('a','i')
            JOIN pg_class tbl ON tbl.oid = d.refobjid
+           JOIN pg_attribute att ON att.attrelid = tbl.oid AND att.attnum = d.refobjsubid
+           LEFT JOIN pg_attrdef def ON def.adrelid = tbl.oid AND def.adnum = att.attnum
            WHERE n.nspname = 'public' AND seq.relkind = 'S' LOOP
+    -- (SEQ) no app role can use any counter: writable tables get opaque ids instead
     IF t.tblname IN (SELECT table_name FROM nova_rls_coverage WHERE tier IN ('A','B'))
-       AND t.tblname NOT IN (SELECT table_name FROM nova_rls_readonly_tables) AND t.tblname <> 'nova_chart_audit' THEN
-      EXECUTE format('GRANT USAGE ON SEQUENCE %I TO %s', t.seqname, app_roles);
-    ELSE
-      EXECUTE format('REVOKE ALL ON SEQUENCE %I FROM %s', t.seqname, app_roles);
+       AND t.tblname NOT IN (SELECT table_name FROM nova_rls_readonly_tables) AND t.tblname <> 'nova_chart_audit'
+       AND t.coltype = 'bigint' AND t.coldefault LIKE 'nextval(%' THEN
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN %I SET DEFAULT nova_opaque_id()', t.tblname, t.colname);
     END IF;
+    EXECUTE format('REVOKE ALL ON SEQUENCE %I FROM %s', t.seqname, app_roles);
   END LOOP;
   -- functions: nothing for PUBLIC; app roles get only what they need (C10)
   REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;

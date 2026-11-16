@@ -135,19 +135,19 @@ SELECT t_ok('T3.1 empty chart reports missing Article 7 items',
 SELECT t_err('T4.1 nobody can sign as someone else',
   $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative,authenticated_by)
      VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
-             'progress',current_date,'Resident attended morning group and engaged appropriately.','a1000000-0000-0000-0000-000000000001')$q$,
+             'progress',(now() AT TIME ZONE 'America/Phoenix')::date,'Resident attended morning group and engaged appropriately.','a1000000-0000-0000-0000-000000000001')$q$,
   'SIGNATURE_NOT_OWN');
 
 SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000003'); -- BHT writes the note
 INSERT INTO nova_clinical_notes(id,tenant_id,patient_id,admission_id,note_type,service_date,start_time,end_time,service_code,units,
   narrative,resident_response,ai_drafted,requires_cosign,author_credential)
 VALUES ('a5000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001',
-  'a4000000-0000-0000-0000-000000000001','skills_training',current_date,'09:00','10:00','H2017',4,
+  'a4000000-0000-0000-0000-000000000001','skills_training',(now() AT TIME ZONE 'America/Phoenix')::date,'09:00','10:00','H2017',4,
   'Provided independent living skills training on medication routine and meal planning.','Resident identified two steps independently.',
   false,true,'BHT');
 SELECT t_err('T4.2 note narrative cannot be a stub',
   $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative)
-     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',current_date,'ok')$q$,
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',(now() AT TIME ZONE 'America/Phoenix')::date,'ok')$q$,
   'check constraint');
 WITH u AS (UPDATE nova_clinical_notes SET plan_next_steps='Continue daily practice.' WHERE id='a5000000-0000-0000-0000-000000000001' RETURNING 1)
 SELECT t_ok('T4.3 unsigned note is editable', (SELECT count(*) FROM u) = 1);
@@ -192,7 +192,7 @@ INSERT INTO nova_medication_orders(id,tenant_id,patient_id,admission_id,clinical
   is_prn,prn_indication,prn_max_doses_per_day,is_psychotropic,start_date)
 VALUES ('a7000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001',
   'a4000000-0000-0000-0000-000000000001','a6000000-0000-0000-0000-000000000001','Hydroxyzine HCl','25 mg','25 mg','PO','q6h PRN',
-  true,'anxiety',4,true,current_date);
+  true,'anxiety',4,true,(now() AT TIME ZONE 'America/Phoenix')::date);
 SELECT t_err('T6.1 cannot give a dose from an unverified transcription',
   $q$INSERT INTO nova_medication_administrations(tenant_id,patient_id,admission_id,medication_order_id,administered_at,outcome,
        medication_name,strength,dose_given,route,pre_behavior_assessment,administered_by_name,professional_designation)
@@ -236,23 +236,23 @@ SELECT t_err('T6.8 refused dose needs a reason',
 -- T7 complete the rest of the chart, then completeness must be clean ----
 INSERT INTO nova_consents(tenant_id,patient_id,admission_id,consent_type,description,signed_by_name,signer_relationship,signed_on,authenticated_by)
 VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','general',
-        'General consent to treatment','Jordan Rivera','resident',current_date,'a1000000-0000-0000-0000-000000000002'),
+        'General consent to treatment','Jordan Rivera','resident',(now() AT TIME ZONE 'America/Phoenix')::date,'a1000000-0000-0000-0000-000000000002'),
        ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','informed_psychotropic',
-        'Hydroxyzine risks/benefits reviewed','Jordan Rivera','resident',current_date,'a1000000-0000-0000-0000-000000000002');
+        'Hydroxyzine risks/benefits reviewed','Jordan Rivera','resident',(now() AT TIME ZONE 'America/Phoenix')::date,'a1000000-0000-0000-0000-000000000002');
 INSERT INTO nova_history_physicals(tenant_id,patient_id,admission_id,performed_on,practitioner_name,practitioner_credential,medical_history,exam_findings,authenticated_by)
-VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',current_date-3,
+VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',(now() AT TIME ZONE 'America/Phoenix')::date-3,
         'Dr. Prescriber','PMHNP','No chronic medical conditions reported.','Vitals WNL; no acute findings.','a1000000-0000-0000-0000-000000000002');
 INSERT INTO nova_tb_screenings(tenant_id,patient_id,admission_id,method,performed_on,result,authenticated_by)
-VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','igra',current_date-1,'negative','a1000000-0000-0000-0000-000000000002');
+VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','igra',(now() AT TIME ZONE 'America/Phoenix')::date-1,'negative','a1000000-0000-0000-0000-000000000002');
 INSERT INTO nova_bh_assessments(tenant_id,patient_id,admission_id,assessment_type,performed_on,performed_by_name,performed_by_credential,
   presenting_concerns,risk_assessment,diagnoses,recommendations,authenticated_by)
-VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','initial',current_date-1,
+VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','initial',(now() AT TIME ZONE 'America/Phoenix')::date-1,
   'Nurse (A)','RN','Transition from inpatient; anxiety, sleep disruption','Low risk to self/others; no elopement history',ARRAY['F25.0'],
   'BHRF level of care; skills training; medication monitoring','a1000000-0000-0000-0000-000000000002');
 INSERT INTO nova_treatment_plans(id,tenant_id,patient_id,admission_id,effective_on,review_due_on,presenting_issues,resident_participated,
   developed_by_name,developed_by_credential,status)
 VALUES ('a9000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001',
-  'a4000000-0000-0000-0000-000000000001',current_date,current_date+90,'Anxiety; independent living skills',true,'Nurse (A)','RN','active');
+  'a4000000-0000-0000-0000-000000000001',(now() AT TIME ZONE 'America/Phoenix')::date,(now() AT TIME ZONE 'America/Phoenix')::date+90,'Anxiety; independent living skills',true,'Nurse (A)','RN','active');
 INSERT INTO nova_treatment_plan_goals(tenant_id,treatment_plan_id,goal_number,problem,goal,measurable_objective,interventions,frequency,responsible_role)
 VALUES ('a0000000-0000-0000-0000-00000000000a','a9000000-0000-0000-0000-000000000001',1,'Difficulty managing medications',
   'Manage own medication routine','Takes meds with 1 or fewer prompts on 6 of 7 days','Daily skills coaching','Daily','BHT');
@@ -276,9 +276,9 @@ INSERT INTO nova_payer_plans(id,tenant_id,payer_name,clearinghouse,claim_format)
 VALUES ('aa000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-00000000000a','Test Health Plan','Office Ally','837P');
 INSERT INTO nova_claims(id,tenant_id,patient_id,admission_id,payer_plan_id,member_id,billing_provider_npi,diagnosis_codes,statement_from,statement_to)
 VALUES ('ab000000-0000-0000-0000-000000000001','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001',
-  'a4000000-0000-0000-0000-000000000001','aa000000-0000-0000-0000-000000000001','A00000000','1234567890',ARRAY['F25.0'],current_date-1,current_date);
+  'a4000000-0000-0000-0000-000000000001','aa000000-0000-0000-0000-000000000001','A00000000','1234567890',ARRAY['F25.0'],(now() AT TIME ZONE 'America/Phoenix')::date-1,(now() AT TIME ZONE 'America/Phoenix')::date);
 INSERT INTO nova_claim_lines(tenant_id,claim_id,line_number,service_date,procedure_code,units,charge)
-VALUES ('a0000000-0000-0000-0000-00000000000a','ab000000-0000-0000-0000-000000000001',1,current_date,'H2017',4,100);
+VALUES ('a0000000-0000-0000-0000-00000000000a','ab000000-0000-0000-0000-000000000001',1,(now() AT TIME ZONE 'America/Phoenix')::date,'H2017',4,100);
 SELECT t_ok('T9.1 claim line without signed documentation is blocked',
   EXISTS (SELECT 1 FROM nova_claim_validate('ab000000-0000-0000-0000-000000000001') WHERE issue LIKE 'No supporting clinical note%'));
 UPDATE nova_claim_lines SET supporting_note_id='a5000000-0000-0000-0000-000000000001' WHERE claim_id='ab000000-0000-0000-0000-000000000001';
@@ -299,7 +299,7 @@ SELECT t_err('R4.2 app users cannot change the staff roster',
   $q$UPDATE nova_staff_credentials SET may_prescribe=true WHERE user_id='a1000000-0000-0000-0000-000000000003'$q$, 'permission denied');
 INSERT INTO nova_clinical_notes(id,tenant_id,patient_id,admission_id,note_type,service_date,narrative,entered_by)
 VALUES ('a5000000-0000-0000-0000-000000000002','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001',
-  'a4000000-0000-0000-0000-000000000001','progress',current_date,'BHT draft about evening routine and chores.','a1000000-0000-0000-0000-000000000001');
+  'a4000000-0000-0000-0000-000000000001','progress',(now() AT TIME ZONE 'America/Phoenix')::date,'BHT draft about evening routine and chores.','a1000000-0000-0000-0000-000000000001');
 SELECT t_ok('R4.3 submitted author is ignored; author is the signed-in user',
   (SELECT entered_by='a1000000-0000-0000-0000-000000000003' FROM nova_clinical_notes WHERE id='a5000000-0000-0000-0000-000000000002'));
 SELECT t_ok('R7.1 cosign requirement comes from agency policy, not the author (BHT notes need cosign)',
@@ -339,7 +339,7 @@ VALUES ('a6000000-0000-0000-0000-000000000003','a0000000-0000-0000-0000-00000000
         'medication','Lorazepam 1 mg PO PRN, max 1/day','telephone',now(),'a1000000-0000-0000-0000-000000000001','Dr. Prescriber','PMHNP','Nurse (A)');
 INSERT INTO nova_medication_orders(id,tenant_id,patient_id,admission_id,clinical_order_id,medication_name,strength,dose,route,frequency,is_prn,prn_indication,prn_max_doses_per_day,is_psychotropic,start_date)
 VALUES ('a7000000-0000-0000-0000-000000000003','a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
-        'a6000000-0000-0000-0000-000000000003','Lorazepam','1 mg','1 mg','PO','daily PRN',true,'acute agitation',1,true,current_date - 1);
+        'a6000000-0000-0000-0000-000000000003','Lorazepam','1 mg','1 mg','PO','daily PRN',true,'acute agitation',1,true,(now() AT TIME ZONE 'America/Phoenix')::date - 1);
 SELECT t_err('R6.2 transcription cannot be verified before the prescriber authenticates',
   $q$SELECT nova_sign('nova_medication_orders','a7000000-0000-0000-0000-000000000003')$q$, 'MEDORDER_UNAUTHENTICATED');
 SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000001');
@@ -386,7 +386,7 @@ SELECT t_err('N4.2 staff without supervisor/prescriber rights cannot discharge',
   $q$UPDATE nova_admissions SET status='discharged' WHERE id='a4000000-0000-0000-0000-000000000001'$q$, 'DISCHARGE_NOT_PERMITTED');
 SELECT t_err('S3.1 notes can only link goals from this resident''s plan',
   $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative,treatment_plan_goal_ids)
-     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',current_date,
+     VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',(now() AT TIME ZONE 'America/Phoenix')::date,
              'Note linking a goal that is not on this plan.',ARRAY[gen_random_uuid()])$q$, 'NOTE_GOAL_INVALID');
 SELECT t_as('a0000000-0000-0000-0000-00000000000a','a1000000-0000-0000-0000-000000000002'); -- RN
 SELECT t_err('N3.1 back-dated administrations beyond the late-entry window are refused',
@@ -420,6 +420,18 @@ SELECT t_ok('R3.1 audit records the verified actor and the real database login',
 SELECT t_err('R2.1 temp tables are not allowed (blocks audit/rule shadowing)', $q$CREATE TEMP TABLE nova_chart_audit(x int)$q$, 'permission denied');
 SELECT t_err('R10.1 admin functions are not callable by app users', $q$SELECT nova_chart_attach('nova_consents')$q$, 'permission denied');
 SELECT t_err('R10.2 audit sequence is not usable by app users', $q$SELECT nextval('nova_chart_audit_id_seq')$q$, 'permission denied');
+SELECT t_ok('R10.5 (SEQ) app users can use no row counter at all, so one agency cannot gauge another''s volume',
+  NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'S' AND c.relname NOT LIKE 'nova_test_%' AND (has_sequence_privilege(c.oid, 'USAGE') OR has_sequence_privilege(c.oid, 'SELECT'))));
+SELECT t_ok('R10.6 (SEQ) writable tables get opaque, time-ordered ids',
+  NOT EXISTS (SELECT 1 FROM pg_attrdef d JOIN pg_class c ON c.oid = d.adrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval(%'
+                AND has_table_privilege(c.oid, 'INSERT') AND c.relname NOT IN ('nova_chart_audit','nova_test_results')));
+-- D: dates follow the facility clock, not the UTC server clock
+SELECT t_ok('D1.1 6:30 pm in Phoenix (01:30 UTC next day) counts as the Phoenix date',
+  nova_local_date(timestamptz '2026-11-16 01:30:00+00', 'a0000000-0000-0000-0000-00000000000a') = date '2026-11-15');
+SELECT t_ok('D1.2 "today" for chart rules is the facility''s today',
+  nova_facility_today('a0000000-0000-0000-0000-00000000000a') = (now() AT TIME ZONE 'America/Phoenix')::date);
 SELECT t_err('R10.3 app users cannot read the context secret', $q$SELECT * FROM nova_context_secret$q$, 'permission denied');
 SELECT t_err('R10.4 app users cannot set the context secret', $q$SELECT nova_set_context_secret(repeat('x',40))$q$, 'permission denied');
 
@@ -436,7 +448,7 @@ SELECT t_err('T10.6 cannot sign another tenant''s record',
 SELECT t_err('T10.7 cannot claim another tenant''s session by spoofing tenant_id on insert',
   $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative)
      VALUES ('a0000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001',
-             'progress',current_date,'Spoofed note written from the other agency.')$q$, 'WRONG_RESIDENT');
+             'progress',(now() AT TIME ZONE 'America/Phoenix')::date,'Spoofed note written from the other agency.')$q$, 'WRONG_RESIDENT');
 
 -- R1 impersonation by setting session variables (as tenant B)
 SELECT set_config('app.tenant_id','a0000000-0000-0000-0000-00000000000a',false), set_config('app.user_id','a1000000-0000-0000-0000-000000000002',false);
@@ -449,7 +461,7 @@ SELECT t_err('R1.3 a forged context cannot write', $q$INSERT INTO nova_patients(
 SELECT t_as('b0000000-0000-0000-0000-00000000000b','b1000000-0000-0000-0000-000000000001');
 SELECT t_err('R9.1 cannot reference another agency''s resident from your own agency',
   $q$INSERT INTO nova_clinical_notes(tenant_id,patient_id,admission_id,note_type,service_date,narrative)
-     VALUES ('b0000000-0000-0000-0000-00000000000b','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',current_date,'Cross-agency reference attempt here.')$q$, 'WRONG_RESIDENT');
+     VALUES ('b0000000-0000-0000-0000-00000000000b','a2000000-0000-0000-0000-000000000001','a4000000-0000-0000-0000-000000000001','progress',(now() AT TIME ZONE 'America/Phoenix')::date,'Cross-agency reference attempt here.')$q$, 'WRONG_RESIDENT');
 SELECT t_err('R9.3 references to another agency''s rows are refused by row-level security',
   $q$INSERT INTO nova_resident_allergies(tenant_id,patient_id,allergen,allergy_type) VALUES ('b0000000-0000-0000-0000-00000000000b','a2000000-0000-0000-0000-000000000001','x','food')$q$, 'row-level security');
 SELECT t_err('R9.4 a made-up id gives the same answer (no existence oracle)',

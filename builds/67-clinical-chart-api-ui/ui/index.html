@@ -56,7 +56,9 @@ dialog::backdrop{background:rgb(0 0 0/.35)}
 <div id="toast" role="status" aria-live="polite"></div>
 <script>
 "use strict";
-const S = { me:null, residents:[], admissionId:null, tab:"chart", chart:null, mar:null, marDate:new Date().toISOString().slice(0,10), token:null };
+// local calendar date (toISOString() is UTC: after 5 pm in Phoenix it already says tomorrow)
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const S = { me:null, residents:[], admissionId:null, tab:"chart", chart:null, mar:null, marDate:localToday(), token:null };
 const $ = (s, el=document) => el.querySelector(s);
 
 // --- safe DOM building (never inject user text as HTML) ---
@@ -233,10 +235,11 @@ function field(label, input){ return h("div",{}, h("label",{}, label), input); }
 function noteDialog(n){
   const d = $("#dlg"); const goals = S.chart.goals;
   const sel = new Set(n?.treatment_plan_goal_ids||[]);
+  const suggested = new Set(n?.suggested_goal_ids||[]);
   const types = ["progress","shift","individual_counseling","group_counseling","nursing","psychiatric","case_management","skills_training","health_service","contact","other"];
   const f = {
     note_type: h("select",{}, types.map(t => h("option",{value:t, selected:(n?n.note_type:"progress")===t}, t.replace(/_/g," ")))),
-    service_date: h("input",{type:"date",value:(n?.service_date||new Date().toISOString()).slice(0,10)}),
+    service_date: h("input",{type:"date",value:(n?.service_date||localToday()).slice(0,10)}),
     start_time: h("input",{type:"time",value:n?.start_time?.slice(0,5)||""}),
     end_time: h("input",{type:"time",value:n?.end_time?.slice(0,5)||""}),
     location: h("input",{value:n?.location||""}),
@@ -247,7 +250,9 @@ function noteDialog(n){
     plan_next_steps: h("textarea",{style:"min-height:60px"}, n?.plan_next_steps||""),
     requires_cosign: h("input",{type:"checkbox",checked:!!n?.requires_cosign,style:"width:auto"}),
   };
-  const goalBoxes = goals.map(g => h("label",{style:"display:flex;gap:6px;color:var(--ink)"}, h("input",{type:"checkbox",value:g.id,checked:sel.has(g.id),style:"width:auto"}), `Goal ${g.goal_number}: ${g.goal}`));
+  // NovaClerk only suggests goal links; they start unchecked and staff confirm them
+  const goalBoxes = goals.map(g => h("label",{style:"display:flex;gap:6px;color:var(--ink)"}, h("input",{type:"checkbox",value:g.id,checked:sel.has(g.id),style:"width:auto"}), `Goal ${g.goal_number}: ${g.goal}`,
+    suggested.has(g.id) && !sel.has(g.id) ? h("span",{class:"chip warn",title:"NovaClerk thinks your notes point to this goal. Tick it only if this service addressed it."},"Suggested by NovaClerk — confirm") : null));
   const save = async (andSign) => {
     const body = {
       note_type:f.note_type.value, service_date:f.service_date.value, start_time:f.start_time.value||null, end_time:f.end_time.value||null,
@@ -296,7 +301,7 @@ function assistDialog(){
   const types = ["progress","shift","individual_counseling","group_counseling","nursing","case_management","skills_training","health_service","contact","other"];
   const src = h("textarea",{style:"min-height:150px",placeholder:"In your own words: what you did, how the resident responded, and what's next. NovaClerk only uses what you write here."});
   const type = h("select",{}, types.map(t => h("option",{value:t}, t.replace(/_/g," "))));
-  const date = h("input",{type:"date",value:new Date().toISOString().slice(0,10)});
+  const date = h("input",{type:"date",value:localToday()});
   const start = h("input",{type:"time"}), end = h("input",{type:"time"}), code = h("input",{placeholder:"e.g. H2017"}), units = h("input",{type:"number",min:"0",step:"0.25"});
   const out = h("div",{});
   const go = async (btn) => {

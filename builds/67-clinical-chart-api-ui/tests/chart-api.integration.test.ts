@@ -29,7 +29,10 @@ const resolve = async (req: { headers?: Record<string, string | undefined> }): P
 const authorize = async (c: ChartContext, action: string) => (caps[c.actor.role] ?? []).includes(action);
 
 let server: Server; let base = ""; const origin = "http://127.0.0.1";
-const ids = { admA: uuid(), admB: uuid(), patA: uuid(), patB: uuid(), orderA: uuid(), medPrn: uuid() };
+// the facility calendar day (America/Phoenix), not UTC
+const phoenixToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Phoenix" }).format(new Date());
+const today = phoenixToday;
+const ids = { admA: uuid(), admB: uuid(), patA: uuid(), patB: uuid(), orderA: uuid(), medPrn: uuid(), planA: uuid(), goal1: uuid(), goal2: uuid() };
 
 async function call(sub: string | null, method: string, path: string, body?: unknown) {
   const headers: Record<string, string> = { "Content-Type": "application/json", Origin: origin };
@@ -80,6 +83,13 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
       await c.query(`INSERT INTO nova_medication_orders(id,tenant_id,patient_id,admission_id,clinical_order_id,medication_name,strength,dose,route,frequency,
         is_prn,prn_indication,prn_max_doses_per_day,is_psychotropic,start_date,authenticated_by)
         VALUES ($1,$2,$3,$4,$5,'Hydroxyzine HCl','25 mg','25 mg','PO','q6h PRN',true,'anxiety',4,true,current_date - 1,$6)`, [ids.medPrn, T.a, ids.patA, ids.admA, ids.orderA, U.rn]);
+      await c.query("SELECT set_config('app.ctx',$1,true)", [chartApi.signContext(T.a, U.dr)]);
+      await c.query(`INSERT INTO nova_treatment_plans(id,tenant_id,patient_id,admission_id,effective_on,presenting_issues,resident_participated,developed_by_name,developed_by_credential)
+        VALUES ($1,$2,$3,$4,current_date,'Step-down',true,'Dr. Prescriber','PMHNP')`, [ids.planA, T.a, ids.patA, ids.admA]);
+      await c.query(`INSERT INTO nova_treatment_plan_goals(id,tenant_id,treatment_plan_id,goal_number,problem,goal,measurable_objective,interventions,frequency,responsible_role)
+        VALUES ($1,$3,$4,1,'Meals','Plan weekly grocery shopping','Makes a list weekly','Coaching','Weekly','BHT'),
+               ($2,$3,$4,2,'Anxiety','Improve coping skills for anxiety','Uses a skill daily','Groups','Daily','Therapist')`, [ids.goal1, ids.goal2, T.a, ids.planA]);
+      await c.query("UPDATE nova_treatment_plans SET status='active', authenticated_by=$2 WHERE id=$1", [ids.planA, U.dr]);
       await c.query("COMMIT");
     } finally { c.release(); }
 
@@ -121,7 +131,7 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
 
   it("note writing: draft, edit, sign, then locked; client cannot choose tenant or signer", async () => {
     const created = await call(bht(), "POST", `/api/chart/admissions/${ids.admA}/notes`, {
-      note_type: "skills_training", service_date: new Date().toISOString().slice(0, 10), start_time: "09:00", end_time: "10:00",
+      note_type: "skills_training", service_date: phoenixToday(), start_time: "09:00", end_time: "10:00",
       service_code: "H2017", units: 4, narrative: "Coached resident on medication routine and weekly meal plan.", requires_cosign: true,
       tenant_id: T.b, authenticated_by: U.dr, entered_by: U.dr,
     });
@@ -131,7 +141,7 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
     expect(row.rows[0]).toEqual({ tenant_id: T.a, entered_by: U.bht });
     const notMine = await call(rn(), "POST", `/api/chart/notes/${noteId}`, { note_type: "progress", service_date: "2026-11-10", narrative: "Someone else editing this draft text." });
     expect(notMine.status).toBe(403);
-    const edited = await call(bht(), "POST", `/api/chart/notes/${noteId}`, { note_type: "skills_training", service_date: new Date().toISOString().slice(0, 10), narrative: "Coached resident on medication routine and weekly meal plan in detail.", requires_cosign: true, service_code: "H2017", units: 4 });
+    const edited = await call(bht(), "POST", `/api/chart/notes/${noteId}`, { note_type: "skills_training", service_date: phoenixToday(), narrative: "Coached resident on medication routine and weekly meal plan in detail.", requires_cosign: true, service_code: "H2017", units: 4 });
     expect(edited.status).toBe(200);
     const signed = await call(bht(), "POST", `/api/chart/notes/${noteId}/sign`);
     expect(signed.status).toBe(200); expect(signed.body.item.signed_at).toBeTruthy();
@@ -250,13 +260,18 @@ describe.skipIf(!pool)("Build 67 clinical chart API + UI (real PostgreSQL, RLS e
   });
 
   // ------------------------------------------------------------ NovaClerk (Build 68)
-  const today = () => new Date().toISOString().slice(0, 10);
   it("NovaClerk drafts an unsigned AI note with provenance; a clean draft can be signed by its author", async () => {
     const r = await call(bht(), "POST", `/api/chart/admissions/${ids.admA}/notes/assist`, { note_type: "skills_training", service_date: today(),
       source: "Coached resident on making a grocery list for the week. Resident completed the list with two prompts. Will go shopping with him on Saturday." });
     expect(r.status).toBe(201);
     expect(r.body.item.guard.status).toBe("clean");
     const id = r.body.item.id;
+    // goal links are suggestions only: the note itself carries none until staff confirm
+    expect(r.body.item.suggested_goal_ids).toEqual([ids.goal1]);
+    expect(r.body.item.coach.map((x: any) => x.message).join(" ")).toMatch(/suggests Goal 1/);
+    const listed = (await call(bht(), "GET", `/api/chart/admissions/${ids.admA}`)).body.item.notes.find((n: any) => n.id === id);
+    expect(listed.treatment_plan_goal_ids).toEqual([]);
+    expect(listed.suggested_goal_ids).toEqual([ids.goal1]);
     const row = await pool!.query("SELECT ai_drafted, authenticated_at, entered_by, ai_guard_status FROM nova_clinical_notes WHERE id=$1", [id]);
     expect(row.rows[0]).toMatchObject({ ai_drafted: true, authenticated_at: null, entered_by: U.bht, ai_guard_status: "clean" });
     const why = await call(bht(), "GET", `/api/chart/notes/${id}/ai`);

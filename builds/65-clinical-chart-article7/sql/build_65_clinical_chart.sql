@@ -111,6 +111,18 @@ CREATE TABLE IF NOT EXISTS nova_chart_rules (
 );
 ALTER TABLE nova_chart_rules ADD COLUMN IF NOT EXISTS facility_timezone text NOT NULL DEFAULT 'America/Phoenix';
 
+-- Calendar dates follow the facility's clock, not the server's (servers run on UTC:
+-- at 5 pm in Phoenix it is already tomorrow in UTC). Use these for every "today"
+-- and every timestamp-to-date conversion in chart rules.
+CREATE OR REPLACE FUNCTION nova_facility_tz(p_tenant uuid) RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT COALESCE((SELECT facility_timezone FROM nova_chart_rules WHERE tenant_id = p_tenant), 'America/Phoenix')
+$$;
+CREATE OR REPLACE FUNCTION nova_local_date(p_ts timestamptz, p_tenant uuid) RETURNS date
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$ SELECT (p_ts AT TIME ZONE nova_facility_tz(p_tenant))::date $$;
+CREATE OR REPLACE FUNCTION nova_facility_today(p_tenant uuid) RETURNS date
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$ SELECT nova_local_date(now(), p_tenant) $$;
+
 -- Staff roster: who may prescribe, verify orders, give meds, supervise (C6).
 -- Maintained by agency administrators through a service path; read-only to app users.
 CREATE TABLE IF NOT EXISTS nova_staff_credentials (
@@ -877,7 +889,7 @@ BEGIN
     END IF;
     NEW.status_changed_by := nova_current_user(); NEW.status_changed_at := now();
     IF NEW.status IN ('discontinued','completed') AND OLD.status NOT IN ('discontinued','completed') THEN
-      NEW.stop_date := COALESCE(OLD.stop_date, current_date);
+      NEW.stop_date := COALESCE(OLD.stop_date, nova_facility_today(NEW.tenant_id));
     END IF;
   ELSE
     NEW.status_changed_by := OLD.status_changed_by; NEW.status_changed_at := OLD.status_changed_at;
@@ -1245,7 +1257,7 @@ BEGIN
          WHEN NOT EXISTS (SELECT 1 FROM nova_treatment_plans t WHERE t.admission_id = a.id AND t.status = 'active' AND t.authenticated_at IS NOT NULL) THEN 'needs_signature'
          WHEN NOT EXISTS (SELECT 1 FROM nova_treatment_plans t JOIN nova_treatment_plan_goals g ON g.treatment_plan_id = t.id
                           WHERE t.admission_id = a.id AND t.status = 'active') THEN 'missing'
-         WHEN EXISTS (SELECT 1 FROM nova_treatment_plans t WHERE t.admission_id = a.id AND t.status = 'active' AND t.review_due_on < current_date) THEN 'overdue'
+         WHEN EXISTS (SELECT 1 FROM nova_treatment_plans t WHERE t.admission_id = a.id AND t.status = 'active' AND t.review_due_on < nova_facility_today(a.tenant_id)) THEN 'overdue'
          ELSE 'ok' END,
     (SELECT 'Review due ' || t.review_due_on FROM nova_treatment_plans t WHERE t.admission_id = a.id AND t.status = 'active' ORDER BY version DESC LIMIT 1);
 
@@ -1257,10 +1269,10 @@ BEGIN
   RETURN QUERY SELECT 'TB_CLEARANCE','R9-10-707','Freedom from infectious TB within ' || rules.tb_clearance_days || ' days of admission',
     CASE WHEN EXISTS (SELECT 1 FROM nova_tb_screenings t WHERE t.patient_id = a.patient_id
                       AND t.result IN ('negative','positive_cleared','exempt') AND t.authenticated_at IS NOT NULL
-                      AND t.performed_on >= (a.admitted_at::date - 365)) THEN 'ok'
-         WHEN current_date > a.admitted_at::date + rules.tb_clearance_days THEN 'overdue'
+                      AND t.performed_on >= (nova_local_date(a.admitted_at, a.tenant_id) - 365)) THEN 'ok'
+         WHEN nova_facility_today(a.tenant_id) > nova_local_date(a.admitted_at, a.tenant_id) + rules.tb_clearance_days THEN 'overdue'
          ELSE 'missing' END,
-    'Due by ' || (a.admitted_at::date + rules.tb_clearance_days);
+    'Due by ' || (nova_local_date(a.admitted_at, a.tenant_id) + rules.tb_clearance_days);
 
   SELECT count(*) INTO n FROM nova_medication_administrations m WHERE m.admission_id = a.id AND m.authenticated_at IS NULL;
   RETURN QUERY SELECT 'MAR_SIGNED','R9-10-712(C)','Each administration signed by staff with professional designation',
